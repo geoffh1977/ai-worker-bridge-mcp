@@ -1,0 +1,30 @@
+server:
+  host: 0.0.0.0
+  port: 8080
+  api_key_env: AI_BRIDGE_API_KEY
+  require_api_key: true
+
+state:
+  sqlite_path: /app/data/tasks.sqlite3
+
+logging:
+  level: INFO
+  file_path: /app/logs/bridge.log
+
+circuit_breaker:
+  failure_threshold: 3
+  recovery_seconds: 30
+
+workers:
+  - worker_id: bob
+    display_name: Bob Worker
+    endpoint_url: http://mock-worker:9000/v1/chat/completions
+    auth_type: bearer
+    secret_env: BOB_WORKER_API_KEY
+    model_name: local-worker
+    default_system_prompt: "You are a concise worker."
+    allowed_modes: [sync, async]
+    timeout_limits:
+      sync_seconds: 15
+      async_seconds: 120
+    max_concurrent_tasks: 2

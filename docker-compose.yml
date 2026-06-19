@@ -1,0 +1,39 @@
+services:
+  ai-bridge-mcp:
+    build: .
+    image: geoffh1977/ai-bridge-mcp:latest
+    container_name: ai-worker-bridge-mcp
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      AI_BRIDGE_CONFIG: /app/configs/config.yaml
+      AI_BRIDGE_DATA_DIR: /app/data
+      AI_BRIDGE_LOG_DIR: /app/logs
+    ports:
+      - "${AI_BRIDGE_PORT:-8080}:8080"
+    volumes:
+      - ./config.yaml:/app/configs/config.yaml:ro
+      - ai_bridge_data:/app/data
+      - ai_bridge_logs:/app/logs
+    networks:
+      - ai-workers
+      - ai-backend
+    healthcheck:
+      test: ["CMD", "python", "-c", "import json, urllib.request; r=urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=3); raise SystemExit(0 if json.load(r).get('ok') is True else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  ai_bridge_data:
+  ai_bridge_logs:
+
+networks:
+  ai-workers:
+    external: true
+    name: ai-workers
+  ai-backend:
+    external: true
+    name: ai-backend

@@ -1,0 +1,131 @@
+from __future__ import annotations
+
+import json
+import sqlite3
+import threading
+from pathlib import Path
+from typing import Iterable
+
+from .task_state import TaskRecord, TaskState, utc_now
+
+
+class TaskStore:
+    def __init__(self, sqlite_path: str):
+        self.path = Path(sqlite_path)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.RLock()
+        self._init_db()
+
+    def _connect(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(self.path, timeout=30, isolation_level=None)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA foreign_keys=ON")
+        return conn
+
+    def _init_db(self) -> None:
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS tasks (
+                    task_id TEXT PRIMARY KEY,
+                    worker_id TEXT NOT NULL,
+                    prompt TEXT NOT NULL,
+                    idempotency_key TEXT UNIQUE,
+                    state TEXT NOT NULL,
+                    result_json TEXT,
+                    error TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    started_at TEXT,
+                    completed_at TEXT,
+                    timeout_seconds REAL NOT NULL
+                )
+                """
+            )
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_state ON tasks(state)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_worker ON tasks(worker_id)")
+
+    @staticmethod
+    def _row_to_record(row: sqlite3.Row) -> TaskRecord:
+        return TaskRecord(
+            task_id=row["task_id"],
+            worker_id=row["worker_id"],
+            prompt=row["prompt"],
+            idempotency_key=row["idempotency_key"],
+            state=TaskState(row["state"]),
+            result=json.loads(row["result_json"]) if row["result_json"] else None,
+            error=row["error"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
+            started_at=row["started_at"],
+            completed_at=row["completed_at"],
+            timeout_seconds=row["timeout_seconds"],
+        )
+
+    def upsert(self, task: TaskRecord) -> TaskRecord:
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO tasks(task_id, worker_id, prompt, idempotency_key, state, result_json, error,
+                                  created_at, updated_at, started_at, completed_at, timeout_seconds)
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(task_id) DO UPDATE SET
+                    worker_id=excluded.worker_id,
+                    prompt=excluded.prompt,
+                    idempotency_key=excluded.idempotency_key,
+                    state=excluded.state,
+                    result_json=excluded.result_json,
+                    error=excluded.error,
+                    updated_at=excluded.updated_at,
+                    started_at=excluded.started_at,
+                    completed_at=excluded.completed_at,
+                    timeout_seconds=excluded.timeout_seconds
+                """,
+                (
+                    task.task_id,
+                    task.worker_id,
+                    task.prompt,
+                    task.idempotency_key,
+                    task.state.value,
+                    json.dumps(task.result) if task.result is not None else None,
+                    task.error,
+                    task.created_at,
+                    task.updated_at,
+                    task.started_at,
+                    task.completed_at,
+                    task.timeout_seconds,
+                ),
+            )
+        return task
+
+    def get(self, task_id: str) -> TaskRecord | None:
+        with self._lock, self._connect() as conn:
+            row = conn.execute("SELECT * FROM tasks WHERE task_id=?", (task_id,)).fetchone()
+            return self._row_to_record(row) if row else None
+
+    def get_by_idempotency_key(self, key: str) -> TaskRecord | None:
+        with self._lock, self._connect() as conn:
+            row = conn.execute("SELECT * FROM tasks WHERE idempotency_key=?", (key,)).fetchone()
+            return self._row_to_record(row) if row else None
+
+    def list_by_states(self, states: Iterable[TaskState]) -> list[TaskRecord]:
+        values = [s.value for s in states]
+        if not values:
+            return []
+        placeholders = ",".join("?" for _ in values)
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(f"SELECT * FROM tasks WHERE state IN ({placeholders})", values).fetchall()
+            return [self._row_to_record(r) for r in rows]
+
+    def mark_recovering(self) -> list[TaskRecord]:
+        recoverable = self.list_by_states([TaskState.PENDING, TaskState.RUNNING, TaskState.RETRYING, TaskState.RECOVERING])
+        updated: list[TaskRecord] = []
+        for task in recoverable:
+            if task.state == TaskState.PENDING:
+                updated.append(task)
+                continue
+            task.state = TaskState.RECOVERING
+            task.updated_at = utc_now()
+            updated.append(self.upsert(task))
+        return updated
