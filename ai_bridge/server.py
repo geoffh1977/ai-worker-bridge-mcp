@@ -40,7 +40,8 @@ def create_app(config_path: str | None = None) -> FastAPI:
     paths = runtime_paths()
     paths.data_dir.mkdir(parents=True, exist_ok=True)
     paths.log_dir.mkdir(parents=True, exist_ok=True)
-    config = load_config(config_path)
+    resolved_config_path = config_path or str(paths.config_path)
+    config = load_config(resolved_config_path)
     configure_logging(config.logging.level, config.logging.file_path)
     store = TaskStore(config.state.sqlite_path)
     workers = WorkerRegistry(config.workers, config.circuit_breaker)
@@ -49,9 +50,11 @@ def create_app(config_path: str | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.config = config
+        app.state.config_path = resolved_config_path
         app.state.store = store
         app.state.workers = workers
         app.state.manager = manager
+        app.state.reload_lock = asyncio.Lock()
         await manager.start()
         try:
             yield
@@ -97,10 +100,14 @@ def create_app(config_path: str | None = None) -> FastAPI:
         cfg, _manager, registry = _state(app)
         return {
             "ok": True,
-            "workers": registry.list_public(),
+            "workers": await registry.list_public(),
             "state_store": cfg.state.sqlite_path,
             "mcp": {"sse": "/mcp", "streamable_http": "/mcp", "messages": "/messages"},
         }
+
+    @app.post("/reload")
+    async def reload_config(_: None = Depends(require_auth)) -> dict[str, Any]:
+        return await _reload_config(app)
 
     @app.get("/mcp")
     async def mcp_sse(_: None = Depends(require_auth)) -> StreamingResponse:
@@ -121,13 +128,13 @@ def create_app(config_path: str | None = None) -> FastAPI:
     @app.post("/mcp")
     async def mcp_streamable_http(request: Request, _: None = Depends(require_auth)) -> JSONResponse:
         payload = await request.json()
-        response = await _handle_jsonrpc(payload, app.state.manager, app.state.workers)
+        response = await _handle_jsonrpc(payload, app)
         return JSONResponse(response, headers={"MCP-Protocol-Version": "2025-11-25"})
 
     @app.post("/messages")
     async def mcp_messages(request: Request, _: None = Depends(require_auth)) -> JSONResponse:
         payload = await request.json()
-        response = await _handle_jsonrpc(payload, app.state.manager, app.state.workers)
+        response = await _handle_jsonrpc(payload, app)
         return JSONResponse(response, headers={"MCP-Protocol-Version": "2025-11-25"})
 
     @app.get("/tools")
@@ -155,9 +162,43 @@ def create_app(config_path: str | None = None) -> FastAPI:
 
     @app.get("/worker_list")
     async def worker_list(_: None = Depends(require_auth)) -> dict[str, Any]:
-        return {"ok": True, "workers": app.state.workers.list_public()}
+        return {"ok": True, "workers": await app.state.workers.list_public()}
 
     return app
+
+
+async def _reload_config(app: FastAPI) -> dict[str, Any]:
+    async with app.state.reload_lock:
+        new_config = load_config(app.state.config_path)
+        configure_logging(new_config.logging.level, new_config.logging.file_path)
+        new_workers = WorkerRegistry(new_config.workers, new_config.circuit_breaker)
+        current_manager: TaskManager = app.state.manager
+        current_config: AppConfig = app.state.config
+
+        if new_config.state.sqlite_path != current_config.state.sqlite_path:
+            if current_manager.has_active_tasks():
+                raise HTTPException(
+                    status_code=409,
+                    detail="cannot reload state.sqlite_path while async tasks are active",
+                )
+            await current_manager.stop()
+            new_store = TaskStore(new_config.state.sqlite_path)
+            new_manager = TaskManager(new_store, new_workers)
+            await new_manager.start()
+            app.state.store = new_store
+            app.state.manager = new_manager
+        else:
+            await current_manager.update_workers(new_workers)
+
+        app.state.config = new_config
+        app.state.workers = new_workers
+        return {
+            "ok": True,
+            "message": "configuration reloaded successfully",
+            "config_path": str(app.state.config_path),
+            "workers": await new_workers.list_public(),
+            "state_store": new_config.state.sqlite_path,
+        }
 
 
 def _tool_schemas() -> list[dict[str, Any]]:
@@ -199,6 +240,14 @@ def _tool_schemas() -> list[dict[str, Any]]:
                 "required": ["task_id"],
             },
         },
+        {
+            "name": "worker_config_reload",
+            "description": (
+                "Reload bridge configuration from disk without calling the /reload HTTP "
+                "endpoint directly."
+            ),
+            "inputSchema": {"type": "object", "properties": {}},
+        },
     ]
 
 
@@ -206,10 +255,12 @@ def _content(result: dict[str, Any]) -> list[dict[str, str]]:
     return [{"type": "text", "text": json.dumps(result, ensure_ascii=False)}]
 
 
-async def _handle_jsonrpc(payload: dict[str, Any], manager: TaskManager, workers: WorkerRegistry) -> dict[str, Any]:
+async def _handle_jsonrpc(payload: dict[str, Any], app: FastAPI) -> dict[str, Any]:
     request_id = payload.get("id")
     method = payload.get("method")
     params = payload.get("params") or {}
+    manager: TaskManager = app.state.manager
+    workers: WorkerRegistry = app.state.workers
     try:
         if method == "initialize":
             result = {
@@ -232,9 +283,20 @@ async def _handle_jsonrpc(payload: dict[str, Any], manager: TaskManager, workers
             elif name == "worker_check":
                 call_result = await manager.check(args["task_id"])
             elif name == "worker_list":
-                call_result = {"ok": True, "workers": workers.list_public()}
+                call_result = {"ok": True, "workers": await workers.list_public()}
             elif name == "worker_cancel":
                 call_result = await manager.cancel(args["task_id"])
+            elif name == "worker_config_reload":
+                try:
+                    call_result = await _reload_config(app)
+                except HTTPException as exc:
+                    call_result = {
+                        "ok": False,
+                        "message": str(exc.detail),
+                        "status_code": exc.status_code,
+                    }
+                except Exception as exc:  # noqa: BLE001 - report reload failures as tool output
+                    call_result = {"ok": False, "message": f"configuration reload failed: {exc}"}
             else:
                 raise ValueError(f"unknown tool: {name}")
             result = {"content": _content(call_result), "isError": not call_result.get("ok", False)}

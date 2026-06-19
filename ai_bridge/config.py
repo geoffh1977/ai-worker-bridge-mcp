@@ -4,6 +4,7 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
+from urllib.parse import urlsplit, urlunsplit
 
 import yaml
 from pydantic import BaseModel, Field, HttpUrl, field_validator
@@ -30,6 +31,26 @@ class WorkerConfig(BaseModel):
     allowed_modes: list[Mode] = Field(default_factory=lambda: ["sync", "async"])
     timeout_limits: TimeoutLimits = Field(default_factory=TimeoutLimits)
     max_concurrent_tasks: int = Field(default=2, ge=1)
+
+    @field_validator("endpoint_url", mode="before")
+    @classmethod
+    def normalize_endpoint_url(cls, value: object) -> object:
+        if not isinstance(value, str):
+            return value
+        stripped = value.strip()
+        if not stripped:
+            return stripped
+        parts = urlsplit(stripped)
+        path = parts.path.rstrip("/")
+        if path.endswith("/chat/completions"):
+            return stripped
+        if path.endswith("/v1"):
+            normalized_path = f"{path}/chat/completions"
+        elif path in {"", "/"}:
+            normalized_path = "/v1/chat/completions"
+        else:
+            normalized_path = f"{path}/v1/chat/completions"
+        return urlunsplit((parts.scheme, parts.netloc, normalized_path, parts.query, parts.fragment))
 
     @field_validator("allowed_modes")
     @classmethod

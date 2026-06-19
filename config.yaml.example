@@ -18,7 +18,7 @@ circuit_breaker:
 workers:
   - worker_id: bob
     display_name: Bob Worker
-    endpoint_url: http://mock-worker:9000/v1/chat/completions
+    endpoint_url: http://mock-worker:9000
     auth_type: bearer
     secret_env: BOB_WORKER_API_KEY
     model_name: local-worker

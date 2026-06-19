@@ -1,0 +1,5 @@
+# Repository Git Ignore file
+
+# Ignore Configuration Files
+*/.env*
+*/config.yaml

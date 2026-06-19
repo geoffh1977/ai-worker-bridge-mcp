@@ -35,6 +35,14 @@ class TaskManager:
         if self._background:
             await asyncio.gather(*self._background.values(), return_exceptions=True)
         self._background.clear()
+        self._started = False
+
+    def has_active_tasks(self) -> bool:
+        return any(not task.done() for task in self._background.values())
+
+    async def update_workers(self, workers: WorkerRegistry) -> None:
+        async with self._lock:
+            self.workers = workers
 
     async def call(
         self,
