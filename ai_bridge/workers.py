@@ -11,6 +11,7 @@ from urllib.parse import urlsplit, urlunsplit
 import httpx
 
 from .config import CircuitBreakerConfig, WorkerConfig
+from .metrics import MetricsRegistry
 
 
 class WorkerUnavailable(RuntimeError):
@@ -37,11 +38,14 @@ class WorkerRegistry:
         breaker: CircuitBreakerConfig,
         health_cache_seconds: float = 5.0,
         health_timeout_seconds: float = 0.5,
+        metrics: MetricsRegistry | None = None,
     ):
         self._workers = {w.worker_id: w for w in workers}
         self._breaker = breaker
+        self._metrics = metrics
         self._circuits = {w.worker_id: CircuitState() for w in workers}
         self._semaphores = {w.worker_id: asyncio.Semaphore(w.max_concurrent_tasks) for w in workers}
+        self._active = {w.worker_id: 0 for w in workers}
         self._health = {w.worker_id: HealthState() for w in workers}
         self._health_cache_seconds = health_cache_seconds
         self._health_timeout_seconds = health_timeout_seconds
@@ -52,6 +56,11 @@ class WorkerRegistry:
             return self._workers[worker_id]
         except KeyError as exc:
             raise KeyError(f"unknown worker_id: {worker_id}") from exc
+
+    def active_count(self, worker_id: str | None = None) -> int:
+        if worker_id is not None:
+            return self._active.get(worker_id, 0)
+        return sum(self._active.values())
 
     async def list_public(self) -> list[dict[str, Any]]:
         health_by_worker = await self._health_snapshot()
@@ -67,8 +76,13 @@ class WorkerRegistry:
                     "description": worker.description,
                     "allowed_modes": worker.allowed_modes,
                     "timeout_limits": worker.timeout_limits.model_dump(),
-                    "filesystem": worker.filesystem.model_dump(),
+                    "filesystem": {
+                        "read": worker.filesystem.read,
+                        "write": worker.filesystem.write,
+                    },
+                    "declared_filesystem": worker.filesystem.model_dump(),
                     "max_concurrent_tasks": worker.max_concurrent_tasks,
+                    "active_tasks": self.active_count(worker.worker_id),
                     "status": "up" if health.healthy else "down",
                     "health_checked_at": health.checked_at,
                     "health_error": health.error,
@@ -86,23 +100,13 @@ class WorkerRegistry:
                 or now - self._health[worker.worker_id].checked_at > self._health_cache_seconds
             ]
             if stale_workers:
-                results = await asyncio.gather(
-                    *(self._probe_worker(worker) for worker in stale_workers), return_exceptions=True
-                )
+                results = await asyncio.gather(*(self._probe_worker(worker) for worker in stale_workers), return_exceptions=True)
                 checked_at = time.time()
                 for worker, result in zip(stale_workers, results, strict=True):
                     if isinstance(result, Exception):
-                        self._health[worker.worker_id] = HealthState(
-                            healthy=False,
-                            checked_at=checked_at,
-                            error=result.__class__.__name__,
-                        )
+                        self._health[worker.worker_id] = HealthState(False, checked_at, result.__class__.__name__)
                     else:
-                        self._health[worker.worker_id] = HealthState(
-                            healthy=bool(result),
-                            checked_at=checked_at,
-                            error=None if result else "probe failed",
-                        )
+                        self._health[worker.worker_id] = HealthState(bool(result), checked_at, None if result else "probe failed")
             return dict(self._health)
 
     async def _probe_worker(self, worker: WorkerConfig) -> bool:
@@ -125,13 +129,11 @@ class WorkerRegistry:
         endpoint = urlsplit(str(worker.endpoint_url))
         origin = urlunsplit((endpoint.scheme, endpoint.netloc, "", "", ""))
         urls: list[str] = []
-
         path = endpoint.path.rstrip("/")
         if path.endswith("/chat/completions"):
             openai_base = path[: -len("/chat/completions")]
             if openai_base:
                 urls.append(urlunsplit((endpoint.scheme, endpoint.netloc, f"{openai_base}/models", "", "")))
-
         urls.extend([f"{origin}/health", f"{origin}/v0/health"])
         return list(dict.fromkeys(urls))
 
@@ -160,8 +162,13 @@ class WorkerRegistry:
     def record_failure(self, worker_id: str) -> None:
         circuit = self._circuits[worker_id]
         circuit.failures += 1
+        if self._metrics:
+            self._metrics.inc_worker_failure(worker_id)
         if circuit.failures >= self._breaker.failure_threshold:
+            was_closed = circuit.down_until <= time.monotonic()
             circuit.down_until = time.monotonic() + self._breaker.recovery_seconds
+            if was_closed and self._metrics:
+                self._metrics.inc_circuit_open(worker_id)
 
     async def call(
         self,
@@ -170,6 +177,8 @@ class WorkerRegistry:
         timeout_seconds: float,
         *,
         working_directory: str | None = None,
+        idempotency_key: str | None = None,
+        dispatch_attempt_id: str | None = None,
     ) -> dict[str, Any]:
         worker = self.get(worker_id)
         self.assert_available(worker_id)
@@ -180,14 +189,20 @@ class WorkerRegistry:
         payload: dict[str, Any] = {"model": worker.model_name, "messages": messages}
         if working_directory is not None:
             payload["working_directory"] = working_directory
+        metadata = {k: v for k, v in {"idempotency_key": idempotency_key, "dispatch_attempt_id": dispatch_attempt_id}.items() if v}
+        if metadata:
+            payload["metadata"] = metadata
+        headers = self._headers(worker)
+        if idempotency_key:
+            headers["Idempotency-Key"] = idempotency_key
+        if dispatch_attempt_id:
+            headers["X-Dispatch-Attempt-ID"] = dispatch_attempt_id
+        started = time.monotonic()
         async with self._semaphores[worker_id]:
+            self._active[worker_id] += 1
             try:
                 async with httpx.AsyncClient(timeout=timeout_seconds) as client:
-                    response = await client.post(
-                        str(worker.endpoint_url),
-                        headers=self._headers(worker),
-                        json=payload,
-                    )
+                    response = await client.post(str(worker.endpoint_url), headers=headers, json=payload)
                     response.raise_for_status()
                     data = response.json()
                 self.record_success(worker_id)
@@ -195,6 +210,10 @@ class WorkerRegistry:
             except Exception:
                 self.record_failure(worker_id)
                 raise
+            finally:
+                self._active[worker_id] -= 1
+                if self._metrics:
+                    self._metrics.observe_worker_call(worker_id, time.monotonic() - started)
 
     @staticmethod
     def _normalize_response(data: dict[str, Any]) -> dict[str, Any]:

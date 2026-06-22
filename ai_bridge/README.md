@@ -4,7 +4,7 @@
 The **AI Worker Bridge** is a standalone, containerized MCP server designed to orchestrate communication between an Agent Client (e.g., Hermes/Sora) and OpenAI-compatible worker gateways.
 
 ### Key Capabilities:
-*   **Credential Abstraction:** Hides worker credentials behind a single bridge API key.
+*   **Credential Abstraction:** Hides worker credentials behind scoped bridge credentials (`read`, `submit`, `cancel`, `admin`) with constant-time comparison.
 *   **Unified Interface:** Exposes `worker_*` tools over the Model Context Protocol (MCP) using SSE/HTTP.
 *   **Durable Async Transformation:** Transforms synchronous worker endpoints into durable asynchronous tasks backed by SQLite persistence.
 *   **Runtime Reloads:** Reloads `config.yaml` through either `POST /reload` or the MCP `worker_config_reload` tool.
@@ -26,7 +26,7 @@ The **AI Worker Bridge** is a standalone, containerized MCP server designed to o
 | `docker-compose.yml` | Local runtime configuration with persistent data/log volumes |
 | `config.yaml` | Local runtime config; endpoints may use base URLs and are normalized automatically |
 | `config.yaml.example` | Deployment template for worker configurations |
-| `.env` | Local secrets and bridge API key |
+| `.env` | Local secrets and scoped bridge keys |
 | `.env.example` | Deployment secrets template |
 | `tests/` | Unit, integration, persistence, reload, and MCP tests |
 
@@ -41,8 +41,18 @@ The bridge loads YAML from `AI_BRIDGE_CONFIG` when set, otherwise from `config.y
 server:
   host: 0.0.0.0
   port: 8080
-  api_key_env: AI_BRIDGE_API_KEY
-  require_api_key: true
+
+auth:
+  scoped_keys:
+    - key_id: sora-read
+      env: AI_BRIDGE_SORA_READ_KEY
+      scopes: [read]
+    - key_id: sora-submit
+      env: AI_BRIDGE_SORA_SUBMIT_KEY
+      scopes: [read, submit, cancel]
+    - key_id: sora-admin
+      env: AI_BRIDGE_SORA_ADMIN_KEY
+      scopes: [read, submit, cancel, admin]
 
 state:
   sqlite_path: /app/data/tasks.sqlite3
@@ -78,8 +88,12 @@ workers:
 | :--- | :--- | :--- | :--- |
 | `host` | string | `0.0.0.0` | Bind address used by the app runner/container. |
 | `port` | integer | `8080` | HTTP port used by the app runner/container. |
-| `api_key_env` | string | `AI_BRIDGE_API_KEY` | Environment variable containing the bridge API key. |
-| `require_api_key` | boolean | `true` | When enabled, protected endpoints require `X-API-Key` or `Authorization: Bearer` credentials. |
+
+### `auth`
+| Parameter | Type | Required | Purpose |
+| :--- | :--- | :--- | :--- |
+| `scoped_keys` | list | Yes | Mandatory env-backed bridge credentials. Each key has a `key_id`, `env`, and one or more scopes. General/unscoped API keys are not supported. |
+| `scoped_keys[].scopes` | list | Yes | Allowed values: `read`, `submit`, `cancel`, `admin`. Protected endpoints require the matching scope. |
 
 ### `state`
 | Parameter | Type | Default | Purpose |
@@ -110,8 +124,9 @@ workers:
 | `password_env` | string | For basic auth | Environment variable containing the basic auth password. |
 | `model_name` | string | Yes | Model value sent to the OpenAI-compatible worker. |
 | `default_system_prompt` | string | No | Optional system prompt prepended to worker calls. |
-| `filesystem.read` | list | No | Declarative read paths exposed with worker metadata for worker/container policy. The bridge does not infer file access from task text. Missing `filesystem` defaults to `["/"]` for backward compatibility. |
-| `filesystem.write` | list | No | Paths eligible for `working_directory`; actual write enforcement belongs to the worker/container. An explicit empty list rejects every working directory. Supports wildcard path segments such as `/workspace/*/temp`. |
+| `filesystem.read` | list | No | Declarative read paths exposed with worker metadata for worker/container policy. Missing `filesystem` defaults to deny-all (`[]`) in v1.0. |
+| `filesystem.write` | list | No | Paths eligible for `working_directory`; actual write enforcement belongs to the worker/container. Missing or empty write policy rejects every working directory. Supports wildcard path segments such as `/workspace/*/temp`. |
+| `filesystem.canonicalize` | boolean | No | When true, the bridge resolves visible paths with `Path.resolve()` before comparing against allowed roots to catch symlink escapes. |
 | `allowed_modes` | list | No | Allowed call modes: `sync`, `async`, or both. Defaults to both. |
 | `timeout_limits.sync_seconds` | number | No | Timeout for synchronous worker calls. Defaults to `30`. |
 | `timeout_limits.async_seconds` | number | No | Timeout for durable async worker calls. Defaults to `300`. |
@@ -162,7 +177,7 @@ workers:
 Rules:
 *   Paths must be absolute and start with `/`.
 *   An empty `write` array means no working directory can be selected.
-*   Missing `filesystem` defaults to full access (`read: ["/"]`, `write: ["/"]`) so existing configs keep working.
+*   Missing `filesystem` defaults to deny-all (`read: []`, `write: []`) in v1.0. Use `compat.allow_implicit_root_filesystem: true` only as a temporary migration escape hatch.
 *   Working-directory subpaths are allowed: `/workspace` permits `/workspace/builds`.
 *   Wildcard path segments are supported for working-directory matching.
 *   Traversal is denied before normalization, so `/workspace/../../../etc` is rejected even when `/workspace` is allowed.
@@ -184,7 +199,7 @@ The field is required for every task. The selected directory is validated agains
 
 | Variable | Required | Purpose |
 | :--- | :--- | :--- |
-| `AI_BRIDGE_API_KEY` | Required when `server.require_api_key: true` | Shared bridge API key accepted as `X-API-Key` or bearer token. |
+| `AI_BRIDGE_SORA_READ_KEY` / `AI_BRIDGE_SORA_SUBMIT_KEY` / `AI_BRIDGE_SORA_ADMIN_KEY` | Required when referenced by `auth.scoped_keys` | Scoped bridge keys accepted as `X-API-Key` or bearer token. Names are examples; the config controls the env var names. |
 | `AI_BRIDGE_CONFIG` | Optional | Path to the YAML config file. Defaults to `config.yaml`. |
 | `AI_BRIDGE_DATA_DIR` | Optional | Directory created at startup for local data. Defaults to `./data`. |
 | `AI_BRIDGE_LOG_DIR` | Optional | Directory created at startup for logs. Defaults to `./logs`. |
@@ -195,7 +210,9 @@ The field is required for every task. The selected directory is validated agains
 
 ### `.env.example`
 ```dotenv
-AI_BRIDGE_API_KEY=change-me-long-random-key
+AI_BRIDGE_SORA_READ_KEY=change-me-long-random-read-key
+AI_BRIDGE_SORA_SUBMIT_KEY=change-me-long-random-submit-key
+AI_BRIDGE_SORA_ADMIN_KEY=change-me-long-random-admin-key
 AI_BRIDGE_PORT=8080
 BOB_WORKER_API_KEY=replace-with-worker-api-key
 ```
@@ -207,19 +224,22 @@ Security note: keep real secrets in environment variables or secret managers. `c
 ## ⚙️ Runtime API
 
 ### System Endpoints
-*   **Health Check:** `GET /health` (liveness, no auth)
-*   **Readiness Status:** `GET /status` (config, state store, MCP routes, sanitized worker list)  
-    *Header:* `X-API-Key: <AI_BRIDGE_API_KEY>`
-*   **Runtime Reload:** `POST /reload` (reloads config from disk)  
-    *Header:* `X-API-Key: <AI_BRIDGE_API_KEY>`
+*   **Liveness:** `GET /live` (process is running, no auth)
+*   **Readiness:** `GET /ready` (config loaded and SQLite writable, no auth)
+*   **Compatibility Health:** `GET /health` (points callers to `/live` and `/ready`)
+*   **Metrics:** `GET /metrics` (Prometheus text, requires `read` scope)
+*   **Readiness Status:** `GET /status` (config, state store, queues, sanitized worker list)  
+    *Header:* `X-API-Key: <read scoped key>`
+*   **Runtime Reload:** `POST /reload` (reloads config from disk; requires `admin`)  
+    *Header:* `X-API-Key: <admin scoped key>`
 
 ### MCP Interface
 *   **Discovery & SSE:** `GET /mcp`  
-    *Header:* `X-API-Key: <AI_BRIDGE_API_KEY>`
+    *Header:* `X-API-Key: <read scoped key>`
 *   **HTTP / JSON-RPC:** `POST /mcp`  
-    *Headers:* `X-API-Key: <AI_BRIDGE_API_KEY>`, `MCP-Protocol-Version: 2025-11-25`
+    *Headers:* `X-API-Key: <scoped key>`, `MCP-Protocol-Version: 2025-11-25`
 *   **Legacy Messages Endpoint:** `POST /messages`  
-    *Headers:* `X-API-Key: <AI_BRIDGE_API_KEY>`, `MCP-Protocol-Version: 2025-11-25`
+    *Headers:* `X-API-Key: <scoped key>`, `MCP-Protocol-Version: 2025-11-25`
 
 ### Supported JSON-RPC Methods
 *   `initialize`
@@ -245,7 +265,7 @@ All MCP tool results are returned as MCP text content containing a JSON object. 
 | `worker_check` | `{"task_id":"string"}` | Polls an async task and returns current state, result, or error. |
 | `worker_list` | `{}` | Lists configured workers with sanitized fields, filesystem permissions, normalized endpoint URLs, circuit state, cached health status, `health_checked_at`, and sanitized `health_error` when present. |
 | `worker_cancel` | `{"task_id":"string"}` | Cancels a pending or running async task. Terminal states remain immutable. |
-| `worker_config_reload` | `{}` | Reloads `config.yaml` from disk through the same internal logic as `POST /reload`. Returns `ok: true` with worker and state-store details on success. Returns `ok: false` with a clear message when reload is blocked, such as changing `state.sqlite_path` while async tasks are active. |
+| `worker_config_reload` | `{}` | Reloads `config.yaml` from disk through the same internal logic as `POST /reload`. Requires `admin` scope. Returns `ok: true` with worker and state-store details on success. Returns `ok: false` with a clear message when reload is blocked, such as changing `state.sqlite_path` while async tasks are active. |
 
 ### MCP Tool Call Example: Reload Config
 ```bash

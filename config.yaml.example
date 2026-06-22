@@ -1,8 +1,20 @@
 server:
   host: 0.0.0.0
   port: 8080
-  api_key_env: AI_BRIDGE_API_KEY
-  require_api_key: true
+
+auth:
+  # Scoped keys are mandatory. Values are loaded from env vars and compared in constant time.
+  # Give Sora/callers the smallest scope set they need.
+  scoped_keys:
+    - key_id: sora-read
+      env: AI_BRIDGE_SORA_READ_KEY
+      scopes: [read]
+    - key_id: sora-submit
+      env: AI_BRIDGE_SORA_SUBMIT_KEY
+      scopes: [read, submit, cancel]
+    - key_id: sora-admin
+      env: AI_BRIDGE_SORA_ADMIN_KEY
+      scopes: [read, submit, cancel, admin]
 
 state:
   sqlite_path: /app/data/tasks.sqlite3
@@ -11,9 +23,29 @@ logging:
   level: INFO
   file_path: /app/logs/bridge.log
 
+audit:
+  enabled: true
+  file_path: /app/logs/audit.jsonl
+
 circuit_breaker:
   failure_threshold: 3
   recovery_seconds: 30
+
+recovery:
+  # manual | idempotent | always. Safe default replays only idempotent tasks.
+  policy: idempotent
+  delay_seconds: 0
+
+limits:
+  global_pending_tasks: 1000
+  global_active_tasks: 100
+  per_worker_pending_tasks: 100
+  per_worker_active_tasks: 2
+  sync_active_tasks: 100
+
+compat:
+  # Dangerous migration-only escape hatch. Keep false for production.
+  allow_implicit_root_filesystem: false
 
 workers:
   - worker_id: bob
@@ -31,8 +63,10 @@ workers:
       - system infrastructure design
     description: "Systems Architect / Lead Software Engineer / DevOps Automation"
     filesystem:
+      # Deny-all unless read/write roots are explicitly listed.
       read: ["/workspace", "/shared"]
       write: ["/workspace"]
+      canonicalize: false
     allowed_modes: [sync, async]
     timeout_limits:
       sync_seconds: 15

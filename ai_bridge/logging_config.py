@@ -8,6 +8,11 @@ from pathlib import Path
 from typing import Any
 
 
+_LOGGING_FALLBACK_WARNING = (
+    "file logging disabled: could not open configured log path %s (%s: %s)"
+)
+
+
 class JsonFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         payload: dict[str, Any] = {
@@ -36,7 +41,11 @@ def configure_logging(level: str, file_path: str) -> None:
     root.addHandler(stream)
 
     path = Path(file_path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    file_handler = logging.FileHandler(path, encoding="utf-8")
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        file_handler = logging.FileHandler(path, encoding="utf-8")
+    except OSError as exc:
+        root.warning(_LOGGING_FALLBACK_WARNING, path, exc.__class__.__name__, exc)
+        return
     file_handler.setFormatter(formatter)
     root.addHandler(file_handler)

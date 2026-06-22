@@ -7,10 +7,12 @@ from typing import Literal
 from urllib.parse import urlsplit, urlunsplit
 
 import yaml
-from pydantic import BaseModel, Field, HttpUrl, field_validator
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator, model_validator
 
 AuthType = Literal["none", "bearer", "basic"]
 Mode = Literal["sync", "async"]
+Scope = Literal["read", "submit", "cancel", "admin"]
+RecoveryPolicy = Literal["manual", "idempotent", "always"]
 
 
 class TimeoutLimits(BaseModel):
@@ -19,8 +21,9 @@ class TimeoutLimits(BaseModel):
 
 
 class FilesystemPermissions(BaseModel):
-    read: list[str] = Field(default_factory=lambda: ["/"])
-    write: list[str] = Field(default_factory=lambda: ["/"])
+    read: list[str] = Field(default_factory=list)
+    write: list[str] = Field(default_factory=list)
+    canonicalize: bool = False
 
     @field_validator("read", "write")
     @classmethod
@@ -76,11 +79,37 @@ class WorkerConfig(BaseModel):
         return value
 
 
+class ScopedKeyConfig(BaseModel):
+    key_id: str = Field(min_length=1, pattern=r"^[a-zA-Z0-9_.-]+$")
+    env: str = Field(min_length=1)
+    scopes: list[Scope] = Field(default_factory=list)
+
+    @field_validator("scopes")
+    @classmethod
+    def scopes_not_empty(cls, value: list[Scope]) -> list[Scope]:
+        if not value:
+            raise ValueError("scoped auth keys must include at least one scope")
+        return value
+
+
 class ServerConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     host: str = "0.0.0.0"
     port: int = 8080
-    api_key_env: str = "AI_BRIDGE_API_KEY"
-    require_api_key: bool = True
+
+
+class AuthConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    scoped_keys: list[ScopedKeyConfig] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def scoped_keys_required(self) -> "AuthConfig":
+        from .auth import validate_scoped_keys_present
+
+        validate_scoped_keys_present(self.scoped_keys)
+        return self
 
 
 class StateConfig(BaseModel):
@@ -92,16 +121,43 @@ class LoggingConfig(BaseModel):
     file_path: str = "/app/logs/bridge.log"
 
 
+class AuditConfig(BaseModel):
+    enabled: bool = True
+    file_path: str = "/app/logs/audit.jsonl"
+
+
 class CircuitBreakerConfig(BaseModel):
     failure_threshold: int = Field(default=3, ge=1)
     recovery_seconds: float = Field(default=30, gt=0)
 
 
+class RecoveryConfig(BaseModel):
+    policy: RecoveryPolicy = "idempotent"
+    delay_seconds: float = Field(default=0, ge=0)
+
+
+class LimitsConfig(BaseModel):
+    global_pending_tasks: int = Field(default=1000, ge=0)
+    global_active_tasks: int = Field(default=100, ge=1)
+    per_worker_pending_tasks: int = Field(default=100, ge=0)
+    per_worker_active_tasks: int | None = Field(default=None, ge=1)
+    sync_active_tasks: int = Field(default=100, ge=1)
+
+
+class CompatConfig(BaseModel):
+    allow_implicit_root_filesystem: bool = False
+
+
 class AppConfig(BaseModel):
     server: ServerConfig = Field(default_factory=ServerConfig)
+    auth: AuthConfig = Field(default_factory=AuthConfig)
     state: StateConfig = Field(default_factory=StateConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
+    audit: AuditConfig = Field(default_factory=AuditConfig)
     circuit_breaker: CircuitBreakerConfig = Field(default_factory=CircuitBreakerConfig)
+    recovery: RecoveryConfig = Field(default_factory=RecoveryConfig)
+    limits: LimitsConfig = Field(default_factory=LimitsConfig)
+    compat: CompatConfig = Field(default_factory=CompatConfig)
     workers: list[WorkerConfig]
 
     @field_validator("workers")
@@ -111,6 +167,14 @@ class AppConfig(BaseModel):
         if len(ids) != len(set(ids)):
             raise ValueError("worker_id values must be unique")
         return workers
+
+    def apply_compatibility(self) -> "AppConfig":
+        if self.compat.allow_implicit_root_filesystem:
+            for worker in self.workers:
+                if not worker.filesystem.read and not worker.filesystem.write:
+                    worker.filesystem.read = ["/"]
+                    worker.filesystem.write = ["/"]
+        return self
 
 
 @dataclass(frozen=True)
@@ -147,4 +211,4 @@ def load_config(path: str | Path | None = None) -> AppConfig:
             f"Permission denied reading configuration file: {resolved}. "
             "Ensure the file is readable by the app user, for example chmod 644 config.yaml."
         ) from None
-    return AppConfig.model_validate(raw)
+    return AppConfig.model_validate(raw).apply_compatibility()

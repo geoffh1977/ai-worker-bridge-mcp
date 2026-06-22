@@ -4,7 +4,7 @@ import asyncio
 
 import pytest
 
-from ai_bridge.config import CircuitBreakerConfig, TimeoutLimits, WorkerConfig
+from ai_bridge.config import CircuitBreakerConfig, FilesystemPermissions, TimeoutLimits, WorkerConfig
 from ai_bridge.manager import TaskManager
 from ai_bridge.store import TaskStore
 from ai_bridge.task_state import TaskRecord, TaskState
@@ -22,6 +22,7 @@ class FakeWorkers:
             allowed_modes=["sync", "async"],
             timeout_limits=TimeoutLimits(sync_seconds=0.05, async_seconds=1),
             max_concurrent_tasks=2,
+            filesystem=FilesystemPermissions(read=["/"], write=["/"]),
         )
         self.result = result
         self.delay = delay
@@ -42,6 +43,8 @@ class FakeWorkers:
         timeout_seconds: float,
         *,
         working_directory: str | None = None,
+        idempotency_key: str | None = None,
+        dispatch_attempt_id: str | None = None,
     ):
         self.calls += 1
         if self.delay:
@@ -57,6 +60,7 @@ async def test_async_task_persists_and_recovers_after_manager_restart(tmp_path):
     task = TaskRecord(
         worker_id="bob",
         prompt="---\nworking_directory: /\n---\nsurvive",
+        idempotency_key="recover-once",
         state=TaskState.RUNNING,
         timeout_seconds=1,
     )

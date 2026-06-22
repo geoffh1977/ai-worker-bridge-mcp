@@ -35,11 +35,11 @@ def test_config_parses_filesystem_permissions():
     assert worker.filesystem.write == ["/workspace"]
 
 
-def test_missing_filesystem_defaults_to_full_access_for_backward_compatibility():
+def test_missing_filesystem_defaults_to_deny_all_for_v1_security():
     worker = worker_config()
 
-    assert worker.filesystem.read == ["/"]
-    assert worker.filesystem.write == ["/"]
+    assert worker.filesystem.read == []
+    assert worker.filesystem.write == []
 
 
 def test_extracts_working_directory_from_yaml_frontmatter():
@@ -94,12 +94,19 @@ def test_traversal_is_denied_even_under_allowed_prefix():
 
 
 def test_worker_list_response_includes_filesystem_permissions(tmp_path, monkeypatch):
+    monkeypatch.setenv("TEST_BRIDGE_KEY", "test-secret")
     config_path = tmp_path / "config.yaml"
     state_path = tmp_path / "tasks.sqlite3"
     config_path.write_text(
         f"""
 server:
-  require_api_key: false
+  host: 0.0.0.0
+  port: 8080
+auth:
+  scoped_keys:
+    - key_id: test
+      env: TEST_BRIDGE_KEY
+      scopes: [read, submit, cancel, admin]
 state:
   sqlite_path: {state_path}
 workers:
@@ -121,7 +128,7 @@ workers:
 
     with TestClient(app) as client:
         monkeypatch.setattr(app.state.workers, "_probe_worker", fake_probe)
-        response = client.get("/worker_list")
+        response = client.get("/worker_list", headers={"X-API-Key": "test-secret"})
 
     assert response.status_code == 200
     assert response.json()["workers"][0]["filesystem"] == {
@@ -131,12 +138,19 @@ workers:
 
 
 def test_worker_call_only_validates_working_directory_not_paths_in_prompt(tmp_path, monkeypatch):
+    monkeypatch.setenv("TEST_BRIDGE_KEY", "test-secret")
     config_path = tmp_path / "config.yaml"
     state_path = tmp_path / "tasks.sqlite3"
     config_path.write_text(
         f"""
 server:
-  require_api_key: false
+  host: 0.0.0.0
+  port: 8080
+auth:
+  scoped_keys:
+    - key_id: test
+      env: TEST_BRIDGE_KEY
+      scopes: [read, submit, cancel, admin]
 state:
   sqlite_path: {state_path}
 workers:
@@ -162,6 +176,7 @@ workers:
         monkeypatch.setattr(app.state.workers, "call", fake_call)
         response = client.post(
             "/worker_call",
+            headers={"X-API-Key": "test-secret"},
             json={
                 "worker_id": "bob",
                 "prompt": "---\nworking_directory: /shared\n---\nAnalyze and write /code/example.py",
@@ -173,13 +188,20 @@ workers:
     assert dispatched["working_directory"] == "/shared"
 
 
-def test_http_worker_call_returns_400_for_invalid_working_directory(tmp_path):
+def test_http_worker_call_returns_400_for_invalid_working_directory(tmp_path, monkeypatch):
+    monkeypatch.setenv("TEST_BRIDGE_KEY", "test-secret")
     config_path = tmp_path / "config.yaml"
     state_path = tmp_path / "tasks.sqlite3"
     config_path.write_text(
         f"""
 server:
-  require_api_key: false
+  host: 0.0.0.0
+  port: 8080
+auth:
+  scoped_keys:
+    - key_id: test
+      env: TEST_BRIDGE_KEY
+      scopes: [read, submit, cancel, admin]
 state:
   sqlite_path: {state_path}
 workers:
@@ -199,6 +221,7 @@ workers:
     with TestClient(app) as client:
         response = client.post(
             "/worker_call",
+            headers={"X-API-Key": "test-secret"},
             json={
                 "worker_id": "bob",
                 "prompt": "---\nworking_directory: /directory\n---\nDo the task",
@@ -211,13 +234,20 @@ workers:
     )
 
 
-def test_http_worker_call_returns_400_when_working_directory_is_missing(tmp_path):
+def test_http_worker_call_returns_400_when_working_directory_is_missing(tmp_path, monkeypatch):
+    monkeypatch.setenv("TEST_BRIDGE_KEY", "test-secret")
     config_path = tmp_path / "config.yaml"
     state_path = tmp_path / "tasks.sqlite3"
     config_path.write_text(
         f"""
 server:
-  require_api_key: false
+  host: 0.0.0.0
+  port: 8080
+auth:
+  scoped_keys:
+    - key_id: test
+      env: TEST_BRIDGE_KEY
+      scopes: [read, submit, cancel, admin]
 state:
   sqlite_path: {state_path}
 workers:
@@ -237,6 +267,7 @@ workers:
     with TestClient(app) as client:
         response = client.post(
             "/worker_call",
+            headers={"X-API-Key": "test-secret"},
             json={"worker_id": "bob", "prompt": "Do the task"},
         )
 

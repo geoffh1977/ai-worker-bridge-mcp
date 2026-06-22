@@ -3,6 +3,7 @@ from __future__ import annotations
 import posixpath
 import re
 from functools import lru_cache
+from pathlib import Path
 
 import yaml
 
@@ -35,28 +36,28 @@ def extract_working_directory(prompt: str) -> str | None:
 
 
 def resolve_working_directory(worker: WorkerConfig, prompt: str) -> str:
-    """Require and validate a frontmatter working directory using config only."""
+    """Require and validate a frontmatter working directory using declared worker policy."""
     requested = extract_working_directory(prompt)
     if requested is None:
         raise MissingWorkingDirectory()
     allowed_paths = worker.filesystem.write
-    if not path_is_allowed(requested, allowed_paths):
+    if not path_is_allowed(requested, allowed_paths, canonicalize=worker.filesystem.canonicalize):
         raise InvalidWorkingDirectory(requested, allowed_paths)
-    return posixpath.normpath(requested)
+    return _normalize_for_dispatch(requested, canonicalize=worker.filesystem.canonicalize)
 
 
-def path_is_allowed(candidate: str, allowed_paths: list[str]) -> bool:
+def path_is_allowed(candidate: str, allowed_paths: list[str], *, canonicalize: bool = False) -> bool:
     """Return True when candidate is an allowed path or subpath.
 
-    Wildcard path segments (``*``) match zero or more candidate segments, and an
-    allowed path grants access to its descendants. Traversal segments are always
-    denied before normalization so ``/workspace/../../../etc/passwd`` cannot
-    borrow the trusted prefix. Tiny and dependency-free, as requested by the
-    council of not over-engineering things into Mordor.
+    Defaults are deny-all because production bridges should not grant root by accident.
+    Lexical validation is retained for container-mismatched filesystems; canonical mode
+    additionally resolves symlinks for paths visible to the bridge runtime.
     """
     normalized_candidate = _safe_normalize(candidate)
     if normalized_candidate is None:
         return False
+    if canonicalize:
+        return _canonical_path_is_allowed(normalized_candidate, allowed_paths)
 
     for allowed in allowed_paths:
         if not isinstance(allowed, str) or not allowed.startswith("/"):
@@ -75,6 +76,39 @@ def path_is_allowed(candidate: str, allowed_paths: list[str]) -> bool:
         if normalized_candidate.startswith(f"{normalized_allowed.rstrip('/')}/"):
             return True
     return False
+
+
+def _canonical_path_is_allowed(candidate: str, allowed_paths: list[str]) -> bool:
+    if "*" in candidate:
+        return False
+    try:
+        resolved_candidate = Path(candidate).resolve(strict=False)
+    except OSError:
+        return False
+    for allowed in allowed_paths:
+        if not isinstance(allowed, str) or not allowed.startswith("/") or "*" in allowed:
+            continue
+        normalized_allowed = _safe_normalize(allowed)
+        if normalized_allowed is None:
+            continue
+        try:
+            resolved_allowed = Path(normalized_allowed).resolve(strict=False)
+        except OSError:
+            continue
+        if resolved_allowed == Path("/"):
+            return True
+        if resolved_candidate == resolved_allowed or resolved_allowed in resolved_candidate.parents:
+            return True
+    return False
+
+
+def _normalize_for_dispatch(path: str, *, canonicalize: bool) -> str:
+    normalized = _safe_normalize(path)
+    if normalized is None:
+        return path
+    if canonicalize:
+        return str(Path(normalized).resolve(strict=False))
+    return posixpath.normpath(normalized)
 
 
 def _safe_normalize(path: str) -> str | None:
@@ -102,10 +136,7 @@ def _match_parts(pattern_parts: tuple[str, ...], candidate_parts: tuple[str, ...
     head, *tail = pattern_parts
     tail_tuple = tuple(tail)
     if head == "*":
-        return any(
-            _match_parts(tail_tuple, candidate_parts[index:])
-            for index in range(len(candidate_parts) + 1)
-        )
+        return any(_match_parts(tail_tuple, candidate_parts[index:]) for index in range(len(candidate_parts) + 1))
     if not candidate_parts or head != candidate_parts[0]:
         return False
     return _match_parts(tail_tuple, candidate_parts[1:])

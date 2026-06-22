@@ -11,6 +11,11 @@ from ai_bridge.server import create_app
 from ai_bridge.workers import WorkerRegistry
 
 
+@pytest.fixture(autouse=True)
+def _bridge_key(monkeypatch):
+    monkeypatch.setenv("TEST_BRIDGE_KEY", "test-secret")
+
+
 def test_worker_endpoint_url_base_is_normalized_to_openai_chat_completions():
     config = WorkerConfig.model_validate(
         {
@@ -111,6 +116,7 @@ async def test_worker_list_includes_public_capabilities_and_description(monkeypa
 
 
 def test_mcp_worker_list_response_includes_public_worker_metadata(tmp_path, monkeypatch):
+    monkeypatch.setenv("TEST_BRIDGE_KEY", "test-secret")
     capabilities = [
         "heavy software engineering",
         "secure coding practices",
@@ -123,7 +129,13 @@ def test_mcp_worker_list_response_includes_public_worker_metadata(tmp_path, monk
     config_path.write_text(
         f"""
 server:
-  require_api_key: false
+  host: 0.0.0.0
+  port: 8080
+auth:
+  scoped_keys:
+    - key_id: test
+      env: TEST_BRIDGE_KEY
+      scopes: [read, submit, cancel, admin]
 state:
   sqlite_path: {state_path}
 workers:
@@ -151,6 +163,7 @@ workers:
         monkeypatch.setattr(app.state.workers, "_probe_worker", fake_probe)
         response = client.post(
             "/mcp",
+            headers={"X-API-Key": "test-secret"},
             json={
                 "jsonrpc": "2.0",
                 "id": 7,
@@ -313,7 +326,13 @@ def test_reload_endpoint_swaps_config_without_stopping_existing_manager(tmp_path
     config_path.write_text(
         f"""
 server:
-  require_api_key: false
+  host: 0.0.0.0
+  port: 8080
+auth:
+  scoped_keys:
+    - key_id: test
+      env: TEST_BRIDGE_KEY
+      scopes: [read, submit, cancel, admin]
 state:
   sqlite_path: {state_path}
 workers:
@@ -332,7 +351,13 @@ workers:
         config_path.write_text(
             f"""
 server:
-  require_api_key: false
+  host: 0.0.0.0
+  port: 8080
+auth:
+  scoped_keys:
+    - key_id: test
+      env: TEST_BRIDGE_KEY
+      scopes: [read, submit, cancel, admin]
 state:
   sqlite_path: {state_path}
 workers:
@@ -345,7 +370,7 @@ workers:
             encoding="utf-8",
         )
 
-        response = client.post("/reload")
+        response = client.post("/reload", headers={"X-API-Key": "test-secret"})
 
         assert response.status_code == 200
         assert response.json()["ok"] is True
@@ -361,7 +386,13 @@ def test_worker_config_reload_mcp_tool_is_listed_and_reloads_config(tmp_path):
     config_path.write_text(
         f"""
 server:
-  require_api_key: false
+  host: 0.0.0.0
+  port: 8080
+auth:
+  scoped_keys:
+    - key_id: test
+      env: TEST_BRIDGE_KEY
+      scopes: [read, submit, cancel, admin]
 state:
   sqlite_path: {state_path}
 workers:
@@ -378,6 +409,7 @@ workers:
     with TestClient(app) as client:
         tools_response = client.post(
             "/mcp",
+            headers={"X-API-Key": "test-secret"},
             json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
         )
         tool_names = {tool["name"] for tool in tools_response.json()["result"]["tools"]}
@@ -386,7 +418,13 @@ workers:
         config_path.write_text(
             f"""
 server:
-  require_api_key: false
+  host: 0.0.0.0
+  port: 8080
+auth:
+  scoped_keys:
+    - key_id: test
+      env: TEST_BRIDGE_KEY
+      scopes: [read, submit, cancel, admin]
 state:
   sqlite_path: {state_path}
 workers:
@@ -401,6 +439,7 @@ workers:
 
         reload_response = client.post(
             "/mcp",
+            headers={"X-API-Key": "test-secret"},
             json={
                 "jsonrpc": "2.0",
                 "id": 2,

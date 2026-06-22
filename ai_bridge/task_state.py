@@ -20,6 +20,8 @@ class TaskState(StrEnum):
 
 
 TERMINAL_STATES = {TaskState.COMPLETED, TaskState.FAILED, TaskState.CANCELLED, TaskState.TIMED_OUT}
+ACTIVE_STATES = {TaskState.RUNNING, TaskState.RETRYING}
+QUEUED_STATES = {TaskState.PENDING, TaskState.RECOVERING}
 
 ALLOWED_TRANSITIONS: dict[TaskState, set[TaskState]] = {
     TaskState.PENDING: {TaskState.RUNNING, TaskState.CANCELLED, TaskState.RECOVERING},
@@ -54,6 +56,8 @@ class TaskRecord(BaseModel):
     prompt: str
     working_directory: str | None = None
     idempotency_key: str | None = None
+    dispatch_attempt_id: str | None = None
+    attempt_count: int = 0
     state: TaskState = TaskState.PENDING
     result: dict[str, Any] | None = None
     error: str | None = None
@@ -77,4 +81,11 @@ class TaskRecord(BaseModel):
             clone.error = error
         if result is not None:
             clone.result = result
+        return clone
+
+    def next_attempt(self) -> "TaskRecord":
+        clone = self.model_copy(deep=True)
+        clone.dispatch_attempt_id = uuid4().hex
+        clone.attempt_count += 1
+        clone.updated_at = utc_now()
         return clone

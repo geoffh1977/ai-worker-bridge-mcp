@@ -25,6 +25,6 @@ USER app
 EXPOSE 8080
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD python -c "import json, urllib.request; r=urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=3); raise SystemExit(0 if json.load(r).get('ok') is True else 1)"
+  CMD python -c "import json, urllib.request; r=urllib.request.urlopen('http://127.0.0.1:8080/ready', timeout=3); raise SystemExit(0 if json.load(r).get('ok') is True else 1)"
 
 CMD ["uvicorn", "ai_bridge.server:create_app", "--factory", "--host", "0.0.0.0", "--port", "8080"]

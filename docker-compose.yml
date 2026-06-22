@@ -17,7 +17,7 @@ services:
       - ai_bridge_data:/app/data
       - ai_bridge_logs:/app/logs
     healthcheck:
-      test: ["CMD", "python", "-c", "import json, urllib.request; r=urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=3); raise SystemExit(0 if json.load(r).get('ok') is True else 1)"]
+      test: ["CMD", "python", "-c", "import json, urllib.request; r=urllib.request.urlopen('http://127.0.0.1:8080/ready', timeout=3); raise SystemExit(0 if json.load(r).get('ok') is True else 1)"]
       interval: 30s
       timeout: 5s
       retries: 3

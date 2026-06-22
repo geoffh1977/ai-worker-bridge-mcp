@@ -16,9 +16,7 @@ class InvalidWorkingDirectory(WorkingDirectoryError):
         self.path = path
         self.allowed_paths = allowed_paths
         allowed = ", ".join(allowed_paths) if allowed_paths else "(none)"
-        super().__init__(
-            f"Specified working_directory '{path}' not in allowed paths: {allowed}"
-        )
+        super().__init__(f"Specified working_directory '{path}' not in allowed paths: {allowed}")
 
 
 class MissingWorkingDirectory(WorkingDirectoryError):
@@ -26,3 +24,12 @@ class MissingWorkingDirectory(WorkingDirectoryError):
 
     def __init__(self):
         super().__init__("working_directory is required in YAML frontmatter")
+
+
+class SaturationError(RuntimeError):
+    """Raised when bounded bridge queues or worker capacity are saturated."""
+
+    def __init__(self, message: str, *, status_code: int = 503, scope: str = "bridge"):
+        self.status_code = status_code
+        self.scope = scope
+        super().__init__(message)
