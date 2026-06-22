@@ -63,6 +63,9 @@ workers:
     secret_env: BOB_WORKER_API_KEY
     model_name: local-worker
     default_system_prompt: "You are a concise worker."
+    filesystem:
+      read: ["/workspace", "/shared"]
+      write: ["/workspace"]
     allowed_modes: [sync, async]
     timeout_limits:
       sync_seconds: 15
@@ -107,6 +110,8 @@ workers:
 | `password_env` | string | For basic auth | Environment variable containing the basic auth password. |
 | `model_name` | string | Yes | Model value sent to the OpenAI-compatible worker. |
 | `default_system_prompt` | string | No | Optional system prompt prepended to worker calls. |
+| `filesystem.read` | list | No | Declarative read paths exposed with worker metadata for worker/container policy. The bridge does not infer file access from task text. Missing `filesystem` defaults to `["/"]` for backward compatibility. |
+| `filesystem.write` | list | No | Paths eligible for `working_directory`; actual write enforcement belongs to the worker/container. An explicit empty list rejects every working directory. Supports wildcard path segments such as `/workspace/*/temp`. |
 | `allowed_modes` | list | No | Allowed call modes: `sync`, `async`, or both. Defaults to both. |
 | `timeout_limits.sync_seconds` | number | No | Timeout for synchronous worker calls. Defaults to `30`. |
 | `timeout_limits.async_seconds` | number | No | Timeout for durable async worker calls. Defaults to `300`. |
@@ -127,6 +132,51 @@ endpoint_url: http://bob-worker:8642/v1
 endpoint_url: http://bob-worker:8642/custom/v1/chat/completions?profile=fast
 ```
 No need to hand-type the full path unless the worker uses a custom route. Humanity survives one less stringly-typed footgun.
+
+### Filesystem Permissions
+Worker configs declare the paths that may be selected as a task's working directory. Actual filesystem enforcement remains the responsibility of the worker runtime and its container permissions.
+
+```yaml
+workers:
+  - worker_id: bob
+    display_name: Bob Worker
+    endpoint_url: http://bob-worker:8642
+    auth_type: bearer
+    secret_env: BOB_WORKER_API_KEY
+    model_name: local-worker
+    filesystem:
+      read: ["/workspace", "/shared"]
+      write: ["/workspace"]
+
+  - worker_id: sora
+    display_name: Sora Worker
+    endpoint_url: http://sora-worker:8642
+    auth_type: bearer
+    secret_env: SORA_WORKER_API_KEY
+    model_name: local-worker
+    filesystem:
+      read: ["/", "/shared"]
+      write: ["/shared"]
+```
+
+Rules:
+*   Paths must be absolute and start with `/`.
+*   An empty `write` array means no working directory can be selected.
+*   Missing `filesystem` defaults to full access (`read: ["/"]`, `write: ["/"]`) so existing configs keep working.
+*   Working-directory subpaths are allowed: `/workspace` permits `/workspace/builds`.
+*   Wildcard path segments are supported for working-directory matching.
+*   Traversal is denied before normalization, so `/workspace/../../../etc` is rejected even when `/workspace` is allowed.
+
+Tasks can select their execution directory with leading YAML frontmatter:
+
+```yaml
+---
+working_directory: /shared
+---
+Build the requested artifact.
+```
+
+The field is required for every task. The selected directory is validated against the worker's configured write paths using config comparison only; the bridge performs no permission-test writes and does not inspect paths mentioned in task text or code snippets. Missing or invalid selections fail before dispatch with HTTP 400, with no fallback directory search. The validated value is included as `working_directory` in the OpenAI-compatible worker request and persisted for async task recovery.
 
 ---
 
@@ -191,9 +241,9 @@ All MCP tool results are returned as MCP text content containing a JSON object. 
 
 | Tool | Input Schema | Behavior |
 | :--- | :--- | :--- |
-| `worker_call` | `{"worker_id":"string","prompt":"string","mode":"sync|async","idempotency_key":"string optional"}` | Calls a configured OpenAI-compatible worker. In `sync` mode, returns the worker output directly. In `async` mode, creates a durable task and returns `taskId`. |
+| `worker_call` | `{"worker_id":"string","prompt":"string","mode":"sync|async","idempotency_key":"string optional"}` | Requires YAML-frontmatter `working_directory`, validates that directory against configured write paths without inspecting task text, then calls the worker. In `sync` mode, returns the worker output directly. In `async` mode, creates a durable task and returns `taskId`. |
 | `worker_check` | `{"task_id":"string"}` | Polls an async task and returns current state, result, or error. |
-| `worker_list` | `{}` | Lists configured workers with sanitized fields, normalized endpoint URLs, circuit state, cached health status, `health_checked_at`, and sanitized `health_error` when present. |
+| `worker_list` | `{}` | Lists configured workers with sanitized fields, filesystem permissions, normalized endpoint URLs, circuit state, cached health status, `health_checked_at`, and sanitized `health_error` when present. |
 | `worker_cancel` | `{"task_id":"string"}` | Cancels a pending or running async task. Terminal states remain immutable. |
 | `worker_config_reload` | `{}` | Reloads `config.yaml` from disk through the same internal logic as `POST /reload`. Returns `ok: true` with worker and state-store details on success. Returns `ok: false` with a clear message when reload is blocked, such as changing `state.sqlite_path` while async tasks are active. |
 
@@ -253,7 +303,7 @@ curl -s -X POST http://127.0.0.1:8080/mcp \
 curl -s -X POST http://127.0.0.1:8080/worker_call \
   -H 'Content-Type: application/json' \
   -H 'X-API-Key: dev-local-ai-bridge-key' \
-  -d '{"worker_id":"bob","prompt":"ping","mode":"sync"}'
+  -d '{"worker_id":"bob","prompt":"---\nworking_directory: /workspace\n---\nping","mode":"sync"}'
 ```
 
 ### Asynchronous Worker Call & Polling
@@ -262,7 +312,7 @@ curl -s -X POST http://127.0.0.1:8080/worker_call \
 CREATE_RESPONSE=$(curl -s -X POST http://127.0.0.1:8080/worker_call \
   -H 'Content-Type: application/json' \
   -H 'X-API-Key: dev-local-ai-bridge-key' \
-  -d '{"worker_id":"bob","prompt":"durable ping","mode":"async","idempotency_key":"demo-1"}')
+  -d '{"worker_id":"bob","prompt":"---\nworking_directory: /workspace\n---\ndurable ping","mode":"async","idempotency_key":"demo-1"}')
 
 echo "$CREATE_RESPONSE"
 TASK_ID=$(python -c "import json,sys; print(json.load(sys.stdin)['taskId'])" <<< "$CREATE_RESPONSE")

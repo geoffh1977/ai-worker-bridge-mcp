@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import httpx
 import pytest
 from fastapi.testclient import TestClient
@@ -49,6 +51,126 @@ def test_worker_endpoint_url_full_chat_completions_is_not_modified():
     )
 
     assert str(config.endpoint_url) == "http://bob:8642/custom/v1/chat/completions?profile=fast"
+
+
+def test_worker_config_defaults_capabilities_and_description_for_backward_compatibility():
+    config = WorkerConfig.model_validate(
+        {
+            "worker_id": "bob",
+            "display_name": "Bob",
+            "endpoint_url": "http://bob:8642",
+            "auth_type": "none",
+            "model_name": "test-model",
+        }
+    )
+
+    assert config.capabilities == []
+    assert config.description == ""
+
+
+@pytest.mark.asyncio
+async def test_worker_list_includes_public_capabilities_and_description(monkeypatch):
+    capabilities = [
+        "heavy software engineering",
+        "secure coding practices",
+        "automated script generation",
+        "refactoring messy technical files",
+        "system infrastructure design",
+    ]
+    worker = WorkerConfig.model_validate(
+        {
+            "worker_id": "bob",
+            "display_name": "Bob",
+            "endpoint_url": "http://worker.local/v1/chat/completions",
+            "auth_type": "none",
+            "model_name": "test-model",
+            "capabilities": capabilities,
+            "description": "Systems Architect / Lead Software Engineer / DevOps Automation",
+        }
+    )
+    registry = WorkerRegistry([worker], CircuitBreakerConfig())
+
+    async def fake_probe(worker_config):
+        return True
+
+    monkeypatch.setattr(registry, "_probe_worker", fake_probe)
+
+    workers = await registry.list_public()
+
+    assert workers[0]["capabilities"] == capabilities
+    assert workers[0]["description"] == "Systems Architect / Lead Software Engineer / DevOps Automation"
+    assert workers[0]["worker_id"] == "bob"
+    assert workers[0]["display_name"] == "Bob"
+    assert workers[0]["model_name"] == "test-model"
+    assert workers[0]["allowed_modes"] == ["sync", "async"]
+    assert workers[0]["timeout_limits"] == {"sync_seconds": 30, "async_seconds": 300}
+    assert workers[0]["max_concurrent_tasks"] == 2
+    assert workers[0]["status"] == "up"
+    assert "health_checked_at" in workers[0]
+    assert "health_error" in workers[0]
+
+
+def test_mcp_worker_list_response_includes_public_worker_metadata(tmp_path, monkeypatch):
+    capabilities = [
+        "heavy software engineering",
+        "secure coding practices",
+        "automated script generation",
+        "refactoring messy technical files",
+        "system infrastructure design",
+    ]
+    config_path = tmp_path / "config.yaml"
+    state_path = tmp_path / "tasks.sqlite3"
+    config_path.write_text(
+        f"""
+server:
+  require_api_key: false
+state:
+  sqlite_path: {state_path}
+workers:
+  - worker_id: bob
+    display_name: Bob Worker
+    endpoint_url: http://bob:8642
+    auth_type: none
+    model_name: local-worker
+    capabilities:
+      - heavy software engineering
+      - secure coding practices
+      - automated script generation
+      - refactoring messy technical files
+      - system infrastructure design
+    description: Systems Architect / Lead Software Engineer / DevOps Automation
+""".strip(),
+        encoding="utf-8",
+    )
+    app = create_app(str(config_path))
+
+    async def fake_probe(worker_config):
+        return True
+
+    with TestClient(app) as client:
+        monkeypatch.setattr(app.state.workers, "_probe_worker", fake_probe)
+        response = client.post(
+            "/mcp",
+            json={
+                "jsonrpc": "2.0",
+                "id": 7,
+                "method": "tools/call",
+                "params": {"name": "worker_list", "arguments": {}},
+            },
+        )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["jsonrpc"] == "2.0"
+    assert payload["id"] == 7
+    result = payload["result"]
+    assert result["isError"] is False
+    content = result["content"][0]
+    assert content["type"] == "text"
+    worker_list = json.loads(content["text"])
+    assert worker_list["ok"] is True
+    assert worker_list["workers"][0]["capabilities"] == capabilities
+    assert worker_list["workers"][0]["description"] == "Systems Architect / Lead Software Engineer / DevOps Automation"
 
 
 @pytest.mark.asyncio

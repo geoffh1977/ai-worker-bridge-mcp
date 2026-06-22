@@ -31,6 +31,7 @@ class TaskStore:
                     task_id TEXT PRIMARY KEY,
                     worker_id TEXT NOT NULL,
                     prompt TEXT NOT NULL,
+                    working_directory TEXT,
                     idempotency_key TEXT UNIQUE,
                     state TEXT NOT NULL,
                     result_json TEXT,
@@ -43,6 +44,9 @@ class TaskStore:
                 )
                 """
             )
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(tasks)")}
+            if "working_directory" not in columns:
+                conn.execute("ALTER TABLE tasks ADD COLUMN working_directory TEXT")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_state ON tasks(state)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_worker ON tasks(worker_id)")
 
@@ -52,6 +56,7 @@ class TaskStore:
             task_id=row["task_id"],
             worker_id=row["worker_id"],
             prompt=row["prompt"],
+            working_directory=row["working_directory"],
             idempotency_key=row["idempotency_key"],
             state=TaskState(row["state"]),
             result=json.loads(row["result_json"]) if row["result_json"] else None,
@@ -67,12 +72,13 @@ class TaskStore:
         with self._lock, self._connect() as conn:
             conn.execute(
                 """
-                INSERT INTO tasks(task_id, worker_id, prompt, idempotency_key, state, result_json, error,
+                INSERT INTO tasks(task_id, worker_id, prompt, working_directory, idempotency_key, state, result_json, error,
                                   created_at, updated_at, started_at, completed_at, timeout_seconds)
-                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(task_id) DO UPDATE SET
                     worker_id=excluded.worker_id,
                     prompt=excluded.prompt,
+                    working_directory=excluded.working_directory,
                     idempotency_key=excluded.idempotency_key,
                     state=excluded.state,
                     result_json=excluded.result_json,
@@ -86,6 +92,7 @@ class TaskStore:
                     task.task_id,
                     task.worker_id,
                     task.prompt,
+                    task.working_directory,
                     task.idempotency_key,
                     task.state.value,
                     json.dumps(task.result) if task.result is not None else None,

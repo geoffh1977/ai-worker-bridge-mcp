@@ -5,6 +5,7 @@ import logging
 from typing import Any
 
 from .config import Mode
+from .permissions import resolve_working_directory
 from .store import TaskStore
 from .task_state import TERMINAL_STATES, InvalidTransition, TaskRecord, TaskState
 from .workers import WorkerRegistry
@@ -53,10 +54,16 @@ class TaskManager:
         idempotency_key: str | None = None,
     ) -> dict[str, Any]:
         worker = self.workers.get(worker_id)
+        working_directory = resolve_working_directory(worker, prompt)
         if mode not in worker.allowed_modes:
             return {"ok": False, "error": f"mode {mode} is not allowed for worker {worker_id}"}
         if mode == "sync":
-            result = await self.workers.call(worker_id, prompt, worker.timeout_limits.sync_seconds)
+            result = await self.workers.call(
+                worker_id,
+                prompt,
+                worker.timeout_limits.sync_seconds,
+                working_directory=working_directory,
+            )
             return {"ok": True, "mode": "sync", "worker_id": worker_id, "result": result}
 
         if idempotency_key:
@@ -68,6 +75,7 @@ class TaskManager:
             prompt=prompt,
             idempotency_key=idempotency_key,
             timeout_seconds=worker.timeout_limits.async_seconds,
+            working_directory=working_directory,
         )
         self.store.upsert(task)
         await self._schedule(task)
@@ -109,12 +117,21 @@ class TaskManager:
         if not task or task.state in TERMINAL_STATES:
             return
         try:
+            if task.working_directory is None:
+                worker = self.workers.get(task.worker_id)
+                task.working_directory = resolve_working_directory(worker, task.prompt)
+                self.store.upsert(task)
             if task.state == TaskState.RECOVERING:
                 task = task.transition(TaskState.PENDING)
             if task.state == TaskState.PENDING:
                 task = task.transition(TaskState.RUNNING)
                 self.store.upsert(task)
-            result = await self.workers.call(task.worker_id, task.prompt, task.timeout_seconds)
+            result = await self.workers.call(
+                task.worker_id,
+                task.prompt,
+                task.timeout_seconds,
+                working_directory=task.working_directory,
+            )
             latest = self.store.get(task_id)
             if latest and latest.state not in TERMINAL_STATES:
                 self.store.upsert(latest.transition(TaskState.COMPLETED, result=result))
@@ -152,6 +169,7 @@ class TaskManager:
             "taskId": task.task_id,
             "task_id": task.task_id,
             "worker_id": task.worker_id,
+            "working_directory": task.working_directory,
             "state": task.state.value,
             "result": task.result,
             "error": task.error,

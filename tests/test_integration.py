@@ -35,7 +35,14 @@ class FakeWorkers:
     def list_public(self):
         return [{"worker_id": "bob", "status": "up"}]
 
-    async def call(self, worker_id: str, prompt: str, timeout_seconds: float):
+    async def call(
+        self,
+        worker_id: str,
+        prompt: str,
+        timeout_seconds: float,
+        *,
+        working_directory: str | None = None,
+    ):
         self.calls += 1
         if self.delay:
             await asyncio.sleep(self.delay)
@@ -47,7 +54,12 @@ class FakeWorkers:
 @pytest.mark.asyncio
 async def test_async_task_persists_and_recovers_after_manager_restart(tmp_path):
     store = TaskStore(str(tmp_path / "tasks.sqlite3"))
-    task = TaskRecord(worker_id="bob", prompt="survive", state=TaskState.RUNNING, timeout_seconds=1)
+    task = TaskRecord(
+        worker_id="bob",
+        prompt="---\nworking_directory: /\n---\nsurvive",
+        state=TaskState.RUNNING,
+        timeout_seconds=1,
+    )
     store.upsert(task)
 
     manager = TaskManager(store, FakeWorkers(result="recovered"))
@@ -62,7 +74,7 @@ async def test_async_task_persists_and_recovers_after_manager_restart(tmp_path):
 
     checked = await manager.check(task.task_id)
     assert checked["state"] == "Completed"
-    assert checked["result"]["content"] == "recovered:survive"
+    assert checked["result"]["content"] == "recovered:---\nworking_directory: /\n---\nsurvive"
 
 
 @pytest.mark.asyncio
@@ -71,7 +83,11 @@ async def test_async_timeout_is_recorded_as_timed_out(tmp_path):
     manager = TaskManager(store, FakeWorkers(fail=TimeoutError("worker timeout")))
     await manager.start()
 
-    created = await manager.call(worker_id="bob", prompt="slow", mode="async")
+    created = await manager.call(
+        worker_id="bob",
+        prompt="---\nworking_directory: /\n---\nslow",
+        mode="async",
+    )
     for _ in range(50):
         checked = await manager.check(created["taskId"])
         if checked["state"] == "TimedOut":

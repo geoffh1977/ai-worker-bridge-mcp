@@ -13,6 +13,7 @@ The heart of the project. This component acts as an orchestration layer that:
 - **Async Transformation:** Converts synchronous worker calls into asynchronous tasks.
 - **Task Management:** Tracks state and manages `taskIds` for retrieval.
 - **Standardized API:** Provides a consistent interface via `/worker_call` and `/worker_check`.
+- **Filesystem Guardrails:** `/worker_call` requires a frontmatter `working_directory` and validates it against the worker's configured write paths; Docker and the worker runtime enforce actual filesystem access.
 
 ### 2. 🐶 The AI Watchdog (`/ai_watchdog`)
 A specialized utility designed to solve the "polling problem." The Watchdog is a blocking CLI tool that:

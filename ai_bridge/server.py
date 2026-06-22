@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from .config import AppConfig, load_config, runtime_paths
+from .exceptions import WorkingDirectoryError
 from .logging_config import configure_logging
 from .manager import TaskManager
 from .store import TaskStore
@@ -145,12 +146,15 @@ def create_app(config_path: str | None = None) -> FastAPI:
     async def worker_call(body: WorkerCallRequest, _: None = Depends(require_auth)) -> dict[str, Any]:
         if body.mode not in {"sync", "async"}:
             raise HTTPException(status_code=400, detail="mode must be sync or async")
-        return await app.state.manager.call(
-            worker_id=body.worker_id,
-            prompt=body.prompt,
-            mode=body.mode,
-            idempotency_key=body.idempotency_key,
-        )
+        try:
+            return await app.state.manager.call(
+                worker_id=body.worker_id,
+                prompt=body.prompt,
+                mode=body.mode,
+                idempotency_key=body.idempotency_key,
+            )
+        except WorkingDirectoryError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from None
 
     @app.post("/worker_check")
     async def worker_check(body: WorkerCheckRequest, _: None = Depends(require_auth)) -> dict[str, Any]:
@@ -274,12 +278,20 @@ async def _handle_jsonrpc(payload: dict[str, Any], app: FastAPI) -> dict[str, An
             name = params.get("name")
             args = params.get("arguments") or {}
             if name == "worker_call":
-                call_result = await manager.call(
-                    worker_id=args["worker_id"],
-                    prompt=args["prompt"],
-                    mode=args.get("mode", "sync"),
-                    idempotency_key=args.get("idempotency_key"),
-                )
+                try:
+                    call_result = await manager.call(
+                        worker_id=args["worker_id"],
+                        prompt=args["prompt"],
+                        mode=args.get("mode", "sync"),
+                        idempotency_key=args.get("idempotency_key"),
+                    )
+                except WorkingDirectoryError as exc:
+                    call_result = {
+                        "ok": False,
+                        "status_code": exc.status_code,
+                        "error": "Bad Request",
+                        "message": str(exc),
+                    }
             elif name == "worker_check":
                 call_result = await manager.check(args["task_id"])
             elif name == "worker_list":

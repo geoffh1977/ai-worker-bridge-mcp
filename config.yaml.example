@@ -23,6 +23,16 @@ workers:
     secret_env: BOB_WORKER_API_KEY
     model_name: local-worker
     default_system_prompt: "You are a concise worker."
+    capabilities:
+      - heavy software engineering
+      - secure coding practices
+      - automated script generation
+      - refactoring messy technical files
+      - system infrastructure design
+    description: "Systems Architect / Lead Software Engineer / DevOps Automation"
+    filesystem:
+      read: ["/workspace", "/shared"]
+      write: ["/workspace"]
     allowed_modes: [sync, async]
     timeout_limits:
       sync_seconds: 15

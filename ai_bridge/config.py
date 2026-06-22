@@ -18,6 +18,19 @@ class TimeoutLimits(BaseModel):
     async_seconds: float = Field(default=300, gt=0)
 
 
+class FilesystemPermissions(BaseModel):
+    read: list[str] = Field(default_factory=lambda: ["/"])
+    write: list[str] = Field(default_factory=lambda: ["/"])
+
+    @field_validator("read", "write")
+    @classmethod
+    def paths_are_absolute(cls, value: list[str]) -> list[str]:
+        for path in value:
+            if not path.startswith("/"):
+                raise ValueError("filesystem paths must be absolute")
+        return value
+
+
 class WorkerConfig(BaseModel):
     worker_id: str = Field(min_length=1, pattern=r"^[a-zA-Z0-9_.-]+$")
     display_name: str = Field(min_length=1)
@@ -28,8 +41,11 @@ class WorkerConfig(BaseModel):
     password_env: str | None = None
     model_name: str = Field(min_length=1)
     default_system_prompt: str | None = None
+    capabilities: list[str] = Field(default_factory=list)
+    description: str = Field(default="")
     allowed_modes: list[Mode] = Field(default_factory=lambda: ["sync", "async"])
     timeout_limits: TimeoutLimits = Field(default_factory=TimeoutLimits)
+    filesystem: FilesystemPermissions = Field(default_factory=FilesystemPermissions)
     max_concurrent_tasks: int = Field(default=2, ge=1)
 
     @field_validator("endpoint_url", mode="before")

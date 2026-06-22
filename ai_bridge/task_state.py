@@ -52,6 +52,7 @@ class TaskRecord(BaseModel):
     task_id: str = Field(default_factory=lambda: uuid4().hex)
     worker_id: str
     prompt: str
+    working_directory: str | None = None
     idempotency_key: str | None = None
     state: TaskState = TaskState.PENDING
     result: dict[str, Any] | None = None

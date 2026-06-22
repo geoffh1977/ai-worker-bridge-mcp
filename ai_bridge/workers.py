@@ -63,8 +63,11 @@ class WorkerRegistry:
                     "worker_id": worker.worker_id,
                     "display_name": worker.display_name,
                     "model_name": worker.model_name,
+                    "capabilities": worker.capabilities,
+                    "description": worker.description,
                     "allowed_modes": worker.allowed_modes,
                     "timeout_limits": worker.timeout_limits.model_dump(),
+                    "filesystem": worker.filesystem.model_dump(),
                     "max_concurrent_tasks": worker.max_concurrent_tasks,
                     "status": "up" if health.healthy else "down",
                     "health_checked_at": health.checked_at,
@@ -160,14 +163,23 @@ class WorkerRegistry:
         if circuit.failures >= self._breaker.failure_threshold:
             circuit.down_until = time.monotonic() + self._breaker.recovery_seconds
 
-    async def call(self, worker_id: str, prompt: str, timeout_seconds: float) -> dict[str, Any]:
+    async def call(
+        self,
+        worker_id: str,
+        prompt: str,
+        timeout_seconds: float,
+        *,
+        working_directory: str | None = None,
+    ) -> dict[str, Any]:
         worker = self.get(worker_id)
         self.assert_available(worker_id)
         messages: list[dict[str, str]] = []
         if worker.default_system_prompt:
             messages.append({"role": "system", "content": worker.default_system_prompt})
         messages.append({"role": "user", "content": prompt})
-        payload = {"model": worker.model_name, "messages": messages}
+        payload: dict[str, Any] = {"model": worker.model_name, "messages": messages}
+        if working_directory is not None:
+            payload["working_directory"] = working_directory
         async with self._semaphores[worker_id]:
             try:
                 async with httpx.AsyncClient(timeout=timeout_seconds) as client:
