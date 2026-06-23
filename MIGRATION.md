@@ -33,6 +33,7 @@ This release intentionally tightens the bridge security and operations contract.
 
 6. Metrics and audit logging were added.
    - `GET /metrics` exposes low-cardinality Prometheus text metrics and requires `read` scope when auth is enabled.
+   - Worker call latency is exposed as a Prometheus histogram (`ai_bridge_worker_call_seconds_bucket`, `_count`, `_sum`), with configurable positive, strictly increasing buckets at `metrics.worker_call_seconds_buckets`.
    - Audit logs are append-only JSONL at `audit.file_path` and capture auth failures, scope denials, submissions, cancellations, reloads, denied working directories, and worker failures without prompts or secrets.
 
 ## Minimal Config Update
@@ -61,6 +62,9 @@ limits:
 audit:
   enabled: true
   file_path: /app/logs/audit.jsonl
+
+metrics:
+  worker_call_seconds_buckets: [0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0]
 
 workers:
   - worker_id: bob

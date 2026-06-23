@@ -43,7 +43,10 @@ def resolve_working_directory(worker: WorkerConfig, prompt: str) -> str:
     allowed_paths = worker.filesystem.write
     if not path_is_allowed(requested, allowed_paths, canonicalize=worker.filesystem.canonicalize):
         raise InvalidWorkingDirectory(requested, allowed_paths)
-    return _normalize_for_dispatch(requested, canonicalize=worker.filesystem.canonicalize)
+    try:
+        return _normalize_for_dispatch(requested, canonicalize=worker.filesystem.canonicalize)
+    except (OSError, RuntimeError):
+        raise InvalidWorkingDirectory(requested, allowed_paths) from None
 
 
 def path_is_allowed(candidate: str, allowed_paths: list[str], *, canonicalize: bool = False) -> bool:
@@ -82,8 +85,8 @@ def _canonical_path_is_allowed(candidate: str, allowed_paths: list[str]) -> bool
     if "*" in candidate:
         return False
     try:
-        resolved_candidate = Path(candidate).resolve(strict=False)
-    except OSError:
+        resolved_candidate = Path(candidate).resolve(strict=True)
+    except (OSError, RuntimeError):
         return False
     for allowed in allowed_paths:
         if not isinstance(allowed, str) or not allowed.startswith("/") or "*" in allowed:
@@ -92,8 +95,8 @@ def _canonical_path_is_allowed(candidate: str, allowed_paths: list[str]) -> bool
         if normalized_allowed is None:
             continue
         try:
-            resolved_allowed = Path(normalized_allowed).resolve(strict=False)
-        except OSError:
+            resolved_allowed = Path(normalized_allowed).resolve(strict=True)
+        except (OSError, RuntimeError):
             continue
         if resolved_allowed == Path("/"):
             return True
@@ -107,7 +110,7 @@ def _normalize_for_dispatch(path: str, *, canonicalize: bool) -> str:
     if normalized is None:
         return path
     if canonicalize:
-        return str(Path(normalized).resolve(strict=False))
+        return str(Path(normalized).resolve(strict=True))
     return posixpath.normpath(normalized)
 
 

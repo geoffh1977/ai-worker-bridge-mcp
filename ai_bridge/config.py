@@ -126,6 +126,26 @@ class AuditConfig(BaseModel):
     file_path: str = "/app/logs/audit.jsonl"
 
 
+class MetricsConfig(BaseModel):
+    worker_call_seconds_buckets: list[float] = Field(
+        default_factory=lambda: [0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0]
+    )
+
+    @field_validator("worker_call_seconds_buckets")
+    @classmethod
+    def buckets_are_positive_and_ordered(cls, value: list[float]) -> list[float]:
+        if not value:
+            raise ValueError("worker_call_seconds_buckets must not be empty")
+        previous = 0.0
+        for bucket in value:
+            if bucket <= 0:
+                raise ValueError("worker_call_seconds_buckets must be positive")
+            if bucket <= previous:
+                raise ValueError("worker_call_seconds_buckets must be strictly increasing")
+            previous = bucket
+        return value
+
+
 class CircuitBreakerConfig(BaseModel):
     failure_threshold: int = Field(default=3, ge=1)
     recovery_seconds: float = Field(default=30, gt=0)
@@ -154,6 +174,7 @@ class AppConfig(BaseModel):
     state: StateConfig = Field(default_factory=StateConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     audit: AuditConfig = Field(default_factory=AuditConfig)
+    metrics: MetricsConfig = Field(default_factory=MetricsConfig)
     circuit_breaker: CircuitBreakerConfig = Field(default_factory=CircuitBreakerConfig)
     recovery: RecoveryConfig = Field(default_factory=RecoveryConfig)
     limits: LimitsConfig = Field(default_factory=LimitsConfig)

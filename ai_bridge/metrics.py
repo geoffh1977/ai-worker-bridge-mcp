@@ -6,6 +6,8 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from typing import DefaultDict
 
+DEFAULT_WORKER_CALL_SECONDS_BUCKETS = (0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0)
+
 
 @dataclass
 class MetricsRegistry:
@@ -15,7 +17,12 @@ class MetricsRegistry:
     circuit_open: DefaultDict[str, int] = field(default_factory=lambda: defaultdict(int))
     worker_call_count: DefaultDict[str, int] = field(default_factory=lambda: defaultdict(int))
     worker_call_sum: DefaultDict[str, float] = field(default_factory=lambda: defaultdict(float))
+    worker_call_buckets: DefaultDict[tuple[str, float], int] = field(default_factory=lambda: defaultdict(int))
+    worker_call_seconds_buckets: tuple[float, ...] = DEFAULT_WORKER_CALL_SECONDS_BUCKETS
     _lock: threading.RLock = field(default_factory=threading.RLock)
+
+    def __post_init__(self) -> None:
+        self.worker_call_seconds_buckets = _validate_buckets(self.worker_call_seconds_buckets)
 
     def inc_task_created(self, worker_id: str, mode: str) -> None:
         with self._lock:
@@ -37,6 +44,9 @@ class MetricsRegistry:
         with self._lock:
             self.worker_call_count[worker_id] += 1
             self.worker_call_sum[worker_id] += seconds
+            for bucket in self.worker_call_seconds_buckets:
+                if seconds <= bucket:
+                    self.worker_call_buckets[(worker_id, bucket)] += 1
 
     def render(self, *, active_tasks: int = 0, queued_tasks: int = 0) -> str:
         lines = [
@@ -65,10 +75,16 @@ class MetricsRegistry:
             for worker_id, value in sorted(self.circuit_open.items()):
                 lines.append(f'ai_bridge_circuit_open_total{{worker_id="{worker_id}"}} {value}')
             lines.extend([
-                "# HELP ai_bridge_worker_call_seconds Worker call latency summary.",
-                "# TYPE ai_bridge_worker_call_seconds summary",
+                "# HELP ai_bridge_worker_call_seconds Worker call latency histogram.",
+                "# TYPE ai_bridge_worker_call_seconds histogram",
             ])
             for worker_id, count in sorted(self.worker_call_count.items()):
+                for bucket in self.worker_call_seconds_buckets:
+                    bucket_count = self.worker_call_buckets[(worker_id, bucket)]
+                    lines.append(
+                        f'ai_bridge_worker_call_seconds_bucket{{worker_id="{worker_id}",le="{bucket}"}} {bucket_count}'
+                    )
+                lines.append(f'ai_bridge_worker_call_seconds_bucket{{worker_id="{worker_id}",le="+Inf"}} {count}')
                 lines.append(f'ai_bridge_worker_call_seconds_count{{worker_id="{worker_id}"}} {count}')
                 lines.append(f'ai_bridge_worker_call_seconds_sum{{worker_id="{worker_id}"}} {self.worker_call_sum[worker_id]:.6f}')
         lines.extend([
@@ -80,6 +96,20 @@ class MetricsRegistry:
             f"ai_bridge_queued_tasks {queued_tasks}",
         ])
         return "\n".join(lines) + "\n"
+
+
+def _validate_buckets(buckets: tuple[float, ...]) -> tuple[float, ...]:
+    validated = tuple(float(bucket) for bucket in buckets)
+    if not validated:
+        raise ValueError("worker_call_seconds_buckets must not be empty")
+    previous = 0.0
+    for bucket in validated:
+        if bucket <= 0:
+            raise ValueError("worker_call_seconds_buckets must be positive")
+        if bucket <= previous:
+            raise ValueError("worker_call_seconds_buckets must be strictly increasing")
+        previous = bucket
+    return validated
 
 
 def monotonic() -> float:

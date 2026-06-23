@@ -60,7 +60,7 @@ def create_app(config_path: str | None = None) -> FastAPI:
     resolved_config_path = config_path or str(paths.config_path)
     config = load_config(resolved_config_path)
     configure_logging(config.logging.level, config.logging.file_path)
-    metrics = MetricsRegistry()
+    metrics = MetricsRegistry(worker_call_seconds_buckets=tuple(config.metrics.worker_call_seconds_buckets))
     audit = AuditLogger(config.audit.file_path, enabled=config.audit.enabled)
     store = TaskStore(config.state.sqlite_path)
     workers = WorkerRegistry(config.workers, config.circuit_breaker, metrics=metrics)

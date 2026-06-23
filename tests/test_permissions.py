@@ -15,7 +15,7 @@ from ai_bridge.permissions import (
 from ai_bridge.server import create_app
 
 
-def worker_config(*, read=None, write=None) -> WorkerConfig:
+def worker_config(*, read=None, write=None, canonicalize: bool = False) -> WorkerConfig:
     payload: dict[str, Any] = {
         "worker_id": "sora",
         "display_name": "Sora Worker",
@@ -23,8 +23,12 @@ def worker_config(*, read=None, write=None) -> WorkerConfig:
         "auth_type": "none",
         "model_name": "test-model",
     }
-    if read is not None or write is not None:
-        payload["filesystem"] = {"read": read or [], "write": write or []}
+    if read is not None or write is not None or canonicalize:
+        payload["filesystem"] = {
+            "read": read or [],
+            "write": write or [],
+            "canonicalize": canonicalize,
+        }
     return WorkerConfig.model_validate(payload)
 
 
@@ -91,6 +95,30 @@ def test_wildcard_match_allows_nested_temp_path():
 
 def test_traversal_is_denied_even_under_allowed_prefix():
     assert path_is_allowed("/workspace/../../../etc/passwd", ["/workspace"]) is False
+
+
+def test_canonical_validation_rejects_nonexistent_allowed_subpath(tmp_path):
+    missing = tmp_path / "does-not-exist"
+
+    assert path_is_allowed(str(missing), [str(tmp_path)], canonicalize=True) is False
+
+
+def test_canonical_validation_allows_existing_allowed_subpath(tmp_path):
+    existing = tmp_path / "project"
+    existing.mkdir()
+
+    assert path_is_allowed(str(existing), [str(tmp_path)], canonicalize=True) is True
+
+
+def test_canonical_working_directory_rejects_nonexistent_path_before_dispatch(tmp_path):
+    worker = worker_config(write=[str(tmp_path)], canonicalize=True)
+    missing = tmp_path / "missing-project"
+
+    with pytest.raises(InvalidWorkingDirectory):
+        resolve_working_directory(
+            worker,
+            f"---\nworking_directory: {missing}\n---\nDo the task",
+        )
 
 
 def test_worker_list_response_includes_filesystem_permissions(tmp_path, monkeypatch):

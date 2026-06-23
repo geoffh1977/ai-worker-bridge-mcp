@@ -4,6 +4,8 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
+from ai_bridge.config import AppConfig
+from ai_bridge.metrics import MetricsRegistry
 from ai_bridge.server import create_app
 
 
@@ -71,3 +73,48 @@ def test_audit_log_records_denied_working_directory_without_prompt(tmp_path, mon
     audit_text = audit_path.read_text(encoding="utf-8")
     assert "working_directory_denied" in audit_text
     assert "secret prompt text" not in audit_text
+
+
+def test_worker_call_seconds_renders_histogram_buckets():
+    registry = MetricsRegistry(worker_call_seconds_buckets=(0.1, 0.5, 1.0))
+
+    registry.observe_worker_call("bob", 0.05)
+    registry.observe_worker_call("bob", 0.7)
+
+    rendered = registry.render()
+
+    assert "# TYPE ai_bridge_worker_call_seconds histogram" in rendered
+    assert 'ai_bridge_worker_call_seconds_bucket{worker_id="bob",le="0.1"} 1' in rendered
+    assert 'ai_bridge_worker_call_seconds_bucket{worker_id="bob",le="0.5"} 1' in rendered
+    assert 'ai_bridge_worker_call_seconds_bucket{worker_id="bob",le="1.0"} 2' in rendered
+    assert 'ai_bridge_worker_call_seconds_bucket{worker_id="bob",le="+Inf"} 2' in rendered
+    assert 'ai_bridge_worker_call_seconds_count{worker_id="bob"} 2' in rendered
+    assert 'ai_bridge_worker_call_seconds_sum{worker_id="bob"} 0.750000' in rendered
+
+
+def test_metrics_config_parses_worker_call_seconds_buckets():
+    config = AppConfig.model_validate(
+        {
+            "auth": {
+                "scoped_keys": [
+                    {
+                        "key_id": "test",
+                        "env": "TEST_BRIDGE_KEY",
+                        "scopes": ["read", "submit"],
+                    }
+                ]
+            },
+            "metrics": {"worker_call_seconds_buckets": [0.25, 1.0, 5.0]},
+            "workers": [
+                {
+                    "worker_id": "bob",
+                    "display_name": "Bob Worker",
+                    "endpoint_url": "http://worker.local:8642",
+                    "auth_type": "none",
+                    "model_name": "local-worker",
+                }
+            ],
+        }
+    )
+
+    assert config.metrics.worker_call_seconds_buckets == [0.25, 1.0, 5.0]

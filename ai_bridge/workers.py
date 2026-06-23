@@ -177,8 +177,11 @@ class WorkerRegistry:
         timeout_seconds: float,
         *,
         working_directory: str | None = None,
+        task_id: str | None = None,
         idempotency_key: str | None = None,
         dispatch_attempt_id: str | None = None,
+        attempt_number: int | None = None,
+        recovery_attempt: bool | None = None,
     ) -> dict[str, Any]:
         worker = self.get(worker_id)
         self.assert_available(worker_id)
@@ -189,14 +192,32 @@ class WorkerRegistry:
         payload: dict[str, Any] = {"model": worker.model_name, "messages": messages}
         if working_directory is not None:
             payload["working_directory"] = working_directory
-        metadata = {k: v for k, v in {"idempotency_key": idempotency_key, "dispatch_attempt_id": dispatch_attempt_id}.items() if v}
+        metadata = {
+            k: v
+            for k, v in {
+                "bridge_task_id": task_id,
+                "bridge_idempotency_key": idempotency_key,
+                "bridge_dispatch_attempt_id": dispatch_attempt_id,
+                "bridge_attempt_number": attempt_number,
+                "bridge_recovery_attempt": recovery_attempt,
+            }.items()
+            if v is not None
+        }
         if metadata:
             payload["metadata"] = metadata
         headers = self._headers(worker)
+        if task_id:
+            headers["X-Bridge-Task-Id"] = task_id
         if idempotency_key:
+            headers["X-Bridge-Idempotency-Key"] = idempotency_key
             headers["Idempotency-Key"] = idempotency_key
         if dispatch_attempt_id:
+            headers["X-Bridge-Dispatch-Attempt-Id"] = dispatch_attempt_id
             headers["X-Dispatch-Attempt-ID"] = dispatch_attempt_id
+        if attempt_number is not None:
+            headers["X-Bridge-Attempt-Number"] = str(attempt_number)
+        if recovery_attempt is not None:
+            headers["X-Bridge-Recovery-Attempt"] = "true" if recovery_attempt else "false"
         started = time.monotonic()
         async with self._semaphores[worker_id]:
             self._active[worker_id] += 1

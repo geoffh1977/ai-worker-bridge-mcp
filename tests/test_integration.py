@@ -43,8 +43,11 @@ class FakeWorkers:
         timeout_seconds: float,
         *,
         working_directory: str | None = None,
+        task_id: str | None = None,
         idempotency_key: str | None = None,
         dispatch_attempt_id: str | None = None,
+        attempt_number: int | None = None,
+        recovery_attempt: bool | None = None,
     ):
         self.calls += 1
         if self.delay:

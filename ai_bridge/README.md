@@ -61,6 +61,9 @@ logging:
   level: INFO
   file_path: /app/logs/bridge.log
 
+metrics:
+  worker_call_seconds_buckets: [0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0]
+
 circuit_breaker:
   failure_threshold: 3
   recovery_seconds: 30
@@ -126,7 +129,7 @@ workers:
 | `default_system_prompt` | string | No | Optional system prompt prepended to worker calls. |
 | `filesystem.read` | list | No | Declarative read paths exposed with worker metadata for worker/container policy. Missing `filesystem` defaults to deny-all (`[]`) in v1.0. |
 | `filesystem.write` | list | No | Paths eligible for `working_directory`; actual write enforcement belongs to the worker/container. Missing or empty write policy rejects every working directory. Supports wildcard path segments such as `/workspace/*/temp`. |
-| `filesystem.canonicalize` | boolean | No | When true, the bridge resolves visible paths with `Path.resolve()` before comparing against allowed roots to catch symlink escapes. |
+| `filesystem.canonicalize` | boolean | No | When true, the bridge resolves visible paths with `Path.resolve(strict=True)` before comparing against allowed roots, catching symlink escapes and rejecting nonexistent requested working directories before dispatch. Use only when bridge and worker share the same filesystem namespace. |
 | `allowed_modes` | list | No | Allowed call modes: `sync`, `async`, or both. Defaults to both. |
 | `timeout_limits.sync_seconds` | number | No | Timeout for synchronous worker calls. Defaults to `30`. |
 | `timeout_limits.async_seconds` | number | No | Timeout for durable async worker calls. Defaults to `300`. |
@@ -181,6 +184,7 @@ Rules:
 *   Working-directory subpaths are allowed: `/workspace` permits `/workspace/builds`.
 *   Wildcard path segments are supported for working-directory matching.
 *   Traversal is denied before normalization, so `/workspace/../../../etc` is rejected even when `/workspace` is allowed.
+*   When `filesystem.canonicalize: true`, both the requested working directory and allowed root must exist in the bridge-visible filesystem. Nonexistent subpaths are rejected before any worker dispatch.
 
 Tasks can select their execution directory with leading YAML frontmatter:
 
@@ -191,7 +195,7 @@ working_directory: /shared
 Build the requested artifact.
 ```
 
-The field is required for every task. The selected directory is validated against the worker's configured write paths using config comparison only; the bridge performs no permission-test writes and does not inspect paths mentioned in task text or code snippets. Missing or invalid selections fail before dispatch with HTTP 400, with no fallback directory search. The validated value is included as `working_directory` in the OpenAI-compatible worker request and persisted for async task recovery.
+The field is required for every task. The selected directory is validated against the worker's configured write paths using config comparison only by default. With `filesystem.canonicalize: true`, the bridge additionally performs strict canonical resolution and rejects nonexistent bridge-visible paths. The bridge performs no permission-test writes and does not inspect paths mentioned in task text or code snippets. Missing or invalid selections fail before dispatch with HTTP 400, with no fallback directory search. The validated value is included as `working_directory` in the OpenAI-compatible worker request and persisted for async task recovery.
 
 ---
 
@@ -392,6 +396,9 @@ To integrate this bridge with the Hermes CLI:
 *   **Logs:** Structured JSON logs are written to stdout and `/app/logs/bridge.log`.
 *   **State Store:** Task state is maintained in SQLite at `/app/data/tasks.sqlite3` by default.
 *   **Persistence:** Docker volumes `ai_bridge_data` and `ai_bridge_logs` ensure data survives restarts.
+
+### Metrics
+`GET /metrics` emits Prometheus text format. Worker latency is exposed as the `ai_bridge_worker_call_seconds` histogram with `_bucket`, `_count`, and `_sum` series. Configure bucket boundaries with `metrics.worker_call_seconds_buckets`; values must be positive and strictly increasing.
 
 ### Health Probes
 `worker_list` and `/status` include cached worker health metadata. The bridge probes OpenAI-compatible `/v1/models` first, falls back to `/health`, uses short timeouts, and avoids exposing credentials or raw auth details. Probe results are cached briefly to keep worker listing fast.

@@ -13,8 +13,8 @@ The heart of the project. This component acts as an orchestration layer that:
 - **Async Transformation:** Converts synchronous worker calls into asynchronous tasks.
 - **Task Management:** Tracks state and manages `taskIds` for retrieval.
 - **Standardized API:** Provides a consistent interface via `/worker_call` and `/worker_check`.
-- **Filesystem Guardrails:** `/worker_call` requires a frontmatter `working_directory` and validates it against explicit deny-all-by-default worker write paths; canonical path validation can be enabled per worker.
-- **Production Hardening v1.0+:** Scoped-only credentials, idempotent recovery, bounded queues, `/live`/`/ready`, Prometheus `/metrics`, and append-only JSONL audit logs are implemented. See `MIGRATION.md` for breaking changes.
+- **Filesystem Guardrails:** `/worker_call` requires a frontmatter `working_directory` and validates it against explicit deny-all-by-default worker write paths; canonical path validation can be enabled per worker to reject nonexistent bridge-visible paths and symlink escapes.
+- **Production Hardening v1.0+:** Scoped-only credentials, idempotent recovery, bounded queues, `/live`/`/ready`, Prometheus `/metrics` with worker latency histograms, and append-only JSONL audit logs are implemented. See `MIGRATION.md` for breaking changes.
 
 ### 2. 🐶 The AI Watchdog (`/ai_watchdog`)
 A specialized utility designed to solve the "polling problem." The Watchdog is a blocking CLI tool that:

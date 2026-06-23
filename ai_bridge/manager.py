@@ -163,6 +163,7 @@ class TaskManager:
                 worker = self.workers.get(task.worker_id)
                 task.working_directory = resolve_working_directory(worker, task.prompt)
                 self.store.upsert(task)
+            recovery_attempt = task.state == TaskState.RECOVERING
             if task.state == TaskState.RECOVERING:
                 task = task.transition(TaskState.PENDING)
             if task.state == TaskState.PENDING:
@@ -173,8 +174,11 @@ class TaskManager:
                 task.prompt,
                 task.timeout_seconds,
                 working_directory=task.working_directory,
+                task_id=task.task_id,
                 idempotency_key=task.idempotency_key,
                 dispatch_attempt_id=task.dispatch_attempt_id,
+                attempt_number=task.attempt_count,
+                recovery_attempt=recovery_attempt,
             )
             latest = self.store.get(task_id)
             if latest and latest.state not in TERMINAL_STATES:
