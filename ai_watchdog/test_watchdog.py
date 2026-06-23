@@ -17,24 +17,24 @@ class WatchdogTests(unittest.TestCase):
             env_path.write_text(
                 "AI_BRIDGE_MCP_HOST=http://from-file\n"
                 "AI_BRIDGE_PORT=9999\n"
-                "AI_BRIDGE_API_KEY=file-secret\n"
+                "AI_BRIDGE_READ_KEY=file-secret\n"
                 "AI_BRIDGE_POLL_INTERVAL=0.25\n",
                 encoding="utf-8",
             )
-            with patch.dict(os.environ, {"AI_BRIDGE_API_KEY": "process-secret"}, clear=True):
+            with patch.dict(os.environ, {"AI_BRIDGE_READ_KEY": "process-secret"}, clear=True):
                 cfg = watchdog.load_config(env_path=env_path)
 
         self.assertEqual(cfg.base_url, "http://from-file:9999")
         self.assertEqual(cfg.api_key, "process-secret")
         self.assertEqual(cfg.poll_interval, 0.25)
 
-    def test_load_config_allows_missing_api_key_for_server_side_401(self) -> None:
+    def test_load_config_allows_missing_read_key_for_server_side_401(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             env_path = Path(tmp) / ".env"
             env_path.write_text(
                 "AI_BRIDGE_MCP_HOST=http://from-file\n"
                 "AI_BRIDGE_PORT=9999\n"
-                "AI_BRIDGE_API_KEY=\n",
+                "AI_BRIDGE_READ_KEY=\n",
                 encoding="utf-8",
             )
             with patch.dict(os.environ, {}, clear=True):
@@ -43,7 +43,7 @@ class WatchdogTests(unittest.TestCase):
         self.assertEqual(cfg.base_url, "http://from-file:9999")
         self.assertEqual(cfg.api_key, "")
 
-    def test_load_config_allows_omitted_api_key_for_server_side_401(self) -> None:
+    def test_load_config_allows_omitted_read_key_for_server_side_401(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             env_path = Path(tmp) / ".env"
             env_path.write_text(
@@ -57,7 +57,7 @@ class WatchdogTests(unittest.TestCase):
         self.assertEqual(cfg.base_url, "http://from-file:9999")
         self.assertEqual(cfg.api_key, "")
 
-    def test_check_task_sends_empty_auth_headers_when_api_key_is_missing(self) -> None:
+    def test_check_task_sends_empty_auth_headers_when_read_key_is_missing(self) -> None:
         captured = {}
 
         class FakeResponse:

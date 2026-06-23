@@ -1,7 +1,7 @@
 # 🌉 AI Worker Bridge MCP Server
 
 ## 📖 Overview
-The **AI Worker Bridge** is a standalone, containerized MCP server designed to orchestrate communication between an Agent Client (e.g., Hermes/Sora) and OpenAI-compatible worker gateways.
+The **AI Worker Bridge** is a standalone, containerized MCP server designed to orchestrate communication between an Agent Client (e.g., Hermes Agent, OpenClaw) and OpenAI-compatible worker gateways.
 
 ### Key Capabilities:
 *   **Credential Abstraction:** Hides worker credentials behind scoped bridge credentials (`read`, `submit`, `cancel`, `admin`) with constant-time comparison.
@@ -45,13 +45,13 @@ server:
 auth:
   scoped_keys:
     - key_id: sora-read
-      env: AI_BRIDGE_SORA_READ_KEY
+      env: AI_BRIDGE_READ_KEY
       scopes: [read]
     - key_id: sora-submit
-      env: AI_BRIDGE_SORA_SUBMIT_KEY
+      env: AI_BRIDGE_SUBMIT_KEY
       scopes: [read, submit, cancel]
     - key_id: sora-admin
-      env: AI_BRIDGE_SORA_ADMIN_KEY
+      env: AI_BRIDGE_ADMIN_KEY
       scopes: [read, submit, cancel, admin]
 
 state:
@@ -95,7 +95,7 @@ workers:
 ### `auth`
 | Parameter | Type | Required | Purpose |
 | :--- | :--- | :--- | :--- |
-| `scoped_keys` | list | Yes | Mandatory env-backed bridge credentials. Each key has a `key_id`, `env`, and one or more scopes. General/unscoped API keys are not supported. |
+| `scoped_keys` | list | Yes | Mandatory env-backed bridge credentials. Each key has a `key_id`, `env`, and one or more scopes. Only configured scoped keys are accepted. |
 | `scoped_keys[].scopes` | list | Yes | Allowed values: `read`, `submit`, `cancel`, `admin`. Protected endpoints require the matching scope. |
 
 ### `state`
@@ -203,7 +203,7 @@ The field is required for every task. The selected directory is validated agains
 
 | Variable | Required | Purpose |
 | :--- | :--- | :--- |
-| `AI_BRIDGE_SORA_READ_KEY` / `AI_BRIDGE_SORA_SUBMIT_KEY` / `AI_BRIDGE_SORA_ADMIN_KEY` | Required when referenced by `auth.scoped_keys` | Scoped bridge keys accepted as `X-API-Key` or bearer token. Names are examples; the config controls the env var names. |
+| `AI_BRIDGE_READ_KEY` / `AI_BRIDGE_SUBMIT_KEY` / `AI_BRIDGE_ADMIN_KEY` | Required when referenced by `auth.scoped_keys` | Scoped bridge keys accepted as `X-API-Key` or bearer token. Names are examples; the config controls the env var names. |
 | `AI_BRIDGE_CONFIG` | Optional | Path to the YAML config file. Defaults to `config.yaml`. |
 | `AI_BRIDGE_DATA_DIR` | Optional | Directory created at startup for local data. Defaults to `./data`. |
 | `AI_BRIDGE_LOG_DIR` | Optional | Directory created at startup for logs. Defaults to `./logs`. |
@@ -214,9 +214,9 @@ The field is required for every task. The selected directory is validated agains
 
 ### `.env.example`
 ```dotenv
-AI_BRIDGE_SORA_READ_KEY=change-me-long-random-read-key
-AI_BRIDGE_SORA_SUBMIT_KEY=change-me-long-random-submit-key
-AI_BRIDGE_SORA_ADMIN_KEY=change-me-long-random-admin-key
+AI_BRIDGE_READ_KEY=change-me-long-random-read-key
+AI_BRIDGE_SUBMIT_KEY=change-me-long-random-submit-key
+AI_BRIDGE_ADMIN_KEY=change-me-long-random-admin-key
 AI_BRIDGE_PORT=8080
 BOB_WORKER_API_KEY=replace-with-worker-api-key
 ```
@@ -275,7 +275,7 @@ All MCP tool results are returned as MCP text content containing a JSON object. 
 ```bash
 curl -s -X POST http://127.0.0.1:8080/mcp \
   -H 'Content-Type: application/json' \
-  -H 'X-API-Key: dev-local-ai-bridge-key' \
+  -H "X-API-Key: $AI_BRIDGE_ADMIN_KEY" \
   -d '{
     "jsonrpc":"2.0",
     "id":1,
@@ -308,13 +308,13 @@ Verify the service is online:
 # Check health
 curl -s http://127.0.0.1:8080/health
 
-# Check status (requires API key)
-curl -s -H 'X-API-Key: dev-local-ai-bridge-key' http://127.0.0.1:8080/status
+# Check status (requires read scope)
+curl -s -H "X-API-Key: $AI_BRIDGE_READ_KEY" http://127.0.0.1:8080/status
 
 # Check MCP tool discovery
 curl -s -X POST http://127.0.0.1:8080/mcp \
   -H 'Content-Type: application/json' \
-  -H 'X-API-Key: dev-local-ai-bridge-key' \
+  -H "X-API-Key: $AI_BRIDGE_READ_KEY" \
   -d '{"jsonrpc":"2.0","id":1,"method":"tools/list"}'
 ```
 
@@ -326,7 +326,7 @@ curl -s -X POST http://127.0.0.1:8080/mcp \
 ```bash
 curl -s -X POST http://127.0.0.1:8080/worker_call \
   -H 'Content-Type: application/json' \
-  -H 'X-API-Key: dev-local-ai-bridge-key' \
+  -H "X-API-Key: $AI_BRIDGE_SUBMIT_KEY" \
   -d '{"worker_id":"bob","prompt":"---\nworking_directory: /workspace\n---\nping","mode":"sync"}'
 ```
 
@@ -335,7 +335,7 @@ curl -s -X POST http://127.0.0.1:8080/worker_call \
 ```bash
 CREATE_RESPONSE=$(curl -s -X POST http://127.0.0.1:8080/worker_call \
   -H 'Content-Type: application/json' \
-  -H 'X-API-Key: dev-local-ai-bridge-key' \
+  -H "X-API-Key: $AI_BRIDGE_SUBMIT_KEY" \
   -d '{"worker_id":"bob","prompt":"---\nworking_directory: /workspace\n---\ndurable ping","mode":"async","idempotency_key":"demo-1"}')
 
 echo "$CREATE_RESPONSE"
@@ -346,17 +346,17 @@ TASK_ID=$(python -c "import json,sys; print(json.load(sys.stdin)['taskId'])" <<<
 ```bash
 curl -s -X POST http://127.0.0.1:8080/worker_check \
   -H 'Content-Type: application/json' \
-  -H 'X-API-Key: dev-local-ai-bridge-key' \
+  -H "X-API-Key: $AI_BRIDGE_READ_KEY" \
   -d "{\"task_id\":\"$TASK_ID\"}"
 ```
 
 ### Restart Persistence Check
 Verify that tasks survive a container restart:
 ```bash
-docker compose restart ai-bridge
+docker compose restart ai-bridge-mcp
 curl -s -X POST http://127.0.0.1:8080/worker_check \
   -H 'Content-Type: application/json' \
-  -H 'X-API-Key: dev-local-ai-bridge-key' \
+  -H "X-API-Key: $AI_BRIDGE_READ_KEY" \
   -d "{\"task_id\":\"$TASK_ID\"}"
 ```
 
@@ -364,7 +364,7 @@ curl -s -X POST http://127.0.0.1:8080/worker_check \
 After editing `config.yaml`, reload without restarting the container:
 ```bash
 curl -s -X POST http://127.0.0.1:8080/reload \
-  -H 'X-API-Key: dev-local-ai-bridge-key'
+  -H "X-API-Key: $AI_BRIDGE_ADMIN_KEY"
 ```
 
 The reload is staged and safe:
@@ -386,7 +386,7 @@ To integrate this bridge with the Hermes CLI:
     hermes mcp test ai-worker-bridge
     hermes mcp configure ai-worker-bridge
     ```
-*Security Note: Use the bridge API key in your custom headers or place the bridge behind a trusted network ACL.*
+*Security Note: Use a scoped bridge key in your custom headers or place the bridge behind a trusted network ACL.*
 
 ---
 
@@ -428,5 +428,5 @@ pytest
 ### Containerized Environment
 ```bash
 docker compose build
-docker compose run --rm ai-bridge pytest
+docker compose run --rm ai-bridge-mcp pytest
 ```

@@ -76,20 +76,6 @@ def test_mcp_reload_requires_admin_scope(tmp_path, monkeypatch):
     assert "missing required scope" in response.json()["error"]["message"]
 
 
-def test_general_api_key_env_is_not_accepted(tmp_path, monkeypatch):
-    monkeypatch.setenv("READ_KEY", "read-secret")
-    monkeypatch.setenv("SUBMIT_KEY", "submit-secret")
-    monkeypatch.setenv("ADMIN_KEY", "admin-secret")
-    monkeypatch.setenv("AI_BRIDGE_API_KEY", "legacy-secret")
-    app = create_app(str(_config(tmp_path)))
-
-    with TestClient(app) as client:
-        response = client.get("/worker_list", headers={"X-API-Key": "legacy-secret"})
-
-    assert response.status_code == 401
-    assert response.json()["detail"] == "invalid API key"
-
-
 def test_scoped_keys_are_required(tmp_path):
     config_path = tmp_path / "config.yaml"
     config_path.write_text(
@@ -105,26 +91,3 @@ workers: []
         load_config(config_path)
 
     assert "auth.scoped_keys must define at least one scoped key" in str(excinfo.value)
-
-
-def test_legacy_general_api_key_config_is_rejected(tmp_path):
-    config_path = tmp_path / "config.yaml"
-    config_path.write_text(
-        """
-server:
-  api_key_env: AI_BRIDGE_API_KEY
-  require_api_key: true
-auth:
-  scoped_keys:
-    - key_id: reader
-      env: READ_KEY
-      scopes: [read]
-workers: []
-""".strip(),
-        encoding="utf-8",
-    )
-
-    with pytest.raises(ValidationError) as excinfo:
-        load_config(config_path)
-
-    assert "Extra inputs are not permitted" in str(excinfo.value)

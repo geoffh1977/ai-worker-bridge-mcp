@@ -116,7 +116,7 @@ def load_config(env_path: Path | str = ".env") -> WatchdogConfig:
     file_values = parse_env_file(Path(env_path))
     host = _get_setting("AI_BRIDGE_MCP_HOST", file_values)
     port = _get_setting("AI_BRIDGE_PORT", file_values)
-    api_key = _get_setting("AI_BRIDGE_API_KEY", file_values, "")
+    api_key = _get_setting("AI_BRIDGE_READ_KEY", file_values, "")
 
     if not host:
         raise ConfigError("AI_BRIDGE_MCP_HOST is required via environment or .env")

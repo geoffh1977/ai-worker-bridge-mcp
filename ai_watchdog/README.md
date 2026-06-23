@@ -25,7 +25,7 @@ All watchdog environment variables use the `AI_BRIDGE_*` prefix for consistency 
 | :--- | :--- | :--- | :--- |
 | `AI_BRIDGE_MCP_HOST` | **Yes** | None | Hostname or base URL for the AI Bridge server (e.g., `http://127.0.0.1`). |
 | `AI_BRIDGE_PORT` | No | None | HTTP port appended to host. Leave empty if host already includes a port. |
-| `AI_BRIDGE_API_KEY` | No | `""` | Bridge API key sent as `X-API-Key` and Bearer token. If omitted, server returns 401. |
+| `AI_BRIDGE_READ_KEY` | No | `""` | Scoped bridge read key sent as `X-API-Key` and Bearer token for `/worker_check`. If omitted, server returns 401. |
 | `AI_BRIDGE_POLL_INTERVAL` | No | `2` | Seconds to wait between `/worker_check` calls (Min: 0.1s). |
 | `AI_BRIDGE_TIMEOUT_SECONDS`| No | `1800` | Global max time to wait for terminal state before exiting with error. |
 | `AI_BRIDGE_REQUEST_TIMEOUT`| No | `15` | Per-request HTTP timeout to prevent socket hangs. |
@@ -35,7 +35,7 @@ All watchdog environment variables use the `AI_BRIDGE_*` prefix for consistency 
 ```dotenv
 AI_BRIDGE_MCP_HOST=http://127.0.0.1
 AI_BRIDGE_PORT=8080
-AI_BRIDGE_API_KEY=your-secret-bridge-key
+AI_BRIDGE_READ_KEY=your-scoped-read-key
 AI_BRIDGE_POLL_INTERVAL=2
 AI_BRIDGE_TIMEOUT_SECONDS=1800
 ```
@@ -47,9 +47,8 @@ AI_BRIDGE_TIMEOUT_SECONDS=1800
 ### 1. Initialize Environment
 Enter the directory and prepare your configuration:
 ```bash
-cd /development/Personal/Projects/containers/ai-bridge/ai_watchdog
 cp .env.example .env
-# Edit .env with your bridge host and API key
+# Edit .env with your bridge host and scoped read key
 ```
 
 ### 2. Execute the Watchdog
@@ -77,7 +76,7 @@ The Watchdog blocks until one of the following terminal states is reached:
 
 ## 🤖 Agent Integration
 
-Calling agents (e.g., Hermes/Sora) should use the watchdog to avoid implementing fragile polling loops in their own logic. This ensures a consistent task contract and standardized error handling.
+Calling agents (e.g., Hermes Agent) should use the watchdog to avoid implementing fragile polling loops in their own logic. This ensures a consistent task contract and standardized error handling.
 
 ### Typical Workflow
 1. **Initiate:** Agent calls `worker_call(mode="async")` $\rightarrow$ receives `taskId`.
@@ -88,7 +87,7 @@ Calling agents (e.g., Hermes/Sora) should use the watchdog to avoid implementing
 ```python
 # Recommended pattern for orchestrators
 result = terminal(
-    "cd /development/Personal/Projects/containers/ai-bridge/ai_watchdog "
+    "cd <APP_DIR> "
     "&& python3 watchdog.py task-123 --timeout 900",
     timeout=920, # Set slightly higher than the script's internal timeout
 )
@@ -99,7 +98,7 @@ result = terminal(
 ## 🧪 Development & Verification
 
 ### Testing Suite
-To verify the utility's behavior (including auth fail-open and transient retries), run the test suite:
+To verify the utility's behavior (including scoped-auth fail-open and transient retries), run the test suite:
 ```bash
 python3 -m unittest test_watchdog.py -v
 ```
